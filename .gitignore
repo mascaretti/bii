@@ -534,3 +534,36 @@ pyrightconfig.json
 
 # End of https://www.toptal.com/developers/gitignore/api/python,emacs,latex
 
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.coverage*
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+
+.venv/
+venv/
+
+.ipynb_checkpoints/
+*.nbconvert.ipynb
+
+reports/*.aux
+reports/*.bbl
+reports/*.bcf
+reports/*.blg
+reports/*.fdb_latexmk
+reports/*.fls
+reports/*.log
+reports/*.out
+reports/*.run.xml
+reports/*.toc
+reports/auto/
+reports/main.pdf
+
+.DS_Store
+*.swp
+
