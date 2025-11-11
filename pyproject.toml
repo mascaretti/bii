@@ -22,7 +22,7 @@ dev = [
   "pre-commit>=4",
   "nbqa>=1.9",          # run ruff/mypy on notebooks
   "pytest-xdist>=3",    # parallel tests
-  "pytest-nbmake>=1.5", # test notebooks (optional)
+  "nbmake>=1.5", # test notebooks (optional)
   "jupytext>=1.16",     # pair notebooks with .py for diffs
 ]
 
