@@ -55,7 +55,7 @@ def make_distance(Y_rows: Array, Y_cols: Array) -> Tuple[Array, Array]:
 
 def _unit_ball_volume(d: int) -> Array:
     """V_d = pi^(d/2) / Gamma(1 + d/2)."""
-    d = float(d)
+    d = jnp.array(d, dtype=jnp.float32)
     logV = (d / 2.0) * jnp.log(jnp.pi) - gammaln(1.0 + d / 2.0)
     return jnp.exp(logV)
 
