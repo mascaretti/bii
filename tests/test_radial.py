@@ -13,6 +13,9 @@ from bii.radial import (
     equal_expected_count_shells_via_lambda,
     assign_to_shells_aligned,
     sample_representatives_uniform_aligned,
+    select_representatives_first_in_shell,
+    select_representatives_by_rank,
+    make_shell_dag_pairs,
     make_partition_indices,
     split_XZ_by_partition,
 )
@@ -127,6 +130,133 @@ def test_sample_representatives_in_correct_shell():
             assert np.isnan(repd[s])
 
 
+def test_select_representatives_first_in_shell_deterministic():
+    Y_rows, Y_cols, key = _toy_data(n=30, p=2, seed=4)
+    DY_sorted, cols_sorted = make_distance(Y_rows, Y_cols)
+    d_sorted = DY_sorted[0, :, 0]
+    Rmax = jnp.quantile(d_sorted, 0.8)
+    S = 4
+    radii = equal_expected_count_shells_from_Rmax(float(Rmax), S, dim=2)
+    shell_sorted, _ = assign_to_shells_aligned(DY_sorted, cols_sorted, radii)
+    rep_cols, _ = select_representatives_first_in_shell(DY_sorted, shell_sorted, S)
+
+    # Ensure determinism across repeated calls
+    rep_cols2, _ = select_representatives_first_in_shell(DY_sorted, shell_sorted, S)
+    np.testing.assert_array_equal(rep_cols, rep_cols2)
+
+    # Representatives should be valid members of their shells
+    rep_cols_np = np.array(rep_cols[0], dtype=int)
+    c_sorted = np.array(cols_sorted[0], dtype=int)
+    d_sorted_np = np.array(d_sorted)
+    d_by_col = np.empty_like(d_sorted_np)
+    d_by_col[c_sorted] = d_sorted_np
+    for s, col in enumerate(rep_cols_np):
+        if col < 0:
+            continue
+        shell_label = np.array(shell_sorted[0])[np.where(c_sorted == col)][0]
+        assert shell_label == s
+
+
+def test_select_representatives_by_rank_picks_nearest():
+    Y_rows, Y_cols, _ = _toy_data(n=15, p=2, seed=5)
+    DY_sorted, cols_sorted = make_distance(Y_rows, Y_cols)
+    reps_cols, reps_dists = select_representatives_by_rank(DY_sorted, num_shells=5)
+
+    # Shell k uses k-th nearest neighbour
+    col_sorted_np = np.array(cols_sorted[0], dtype=int)
+    d_sorted_np = np.array(DY_sorted[0, :, 0])
+    for k in range(5):
+        col = reps_cols[0, k]
+        dist = reps_dists[0, k]
+        assert col == col_sorted_np[k] or (k >= len(col_sorted_np) and col == -1)
+        if col >= 0:
+            assert abs(dist - d_sorted_np[k]) < 1e-6
+
+
+def test_make_shell_dag_pairs_full_shells():
+    reps = jnp.array([[3, 10, 5, 12]], dtype=jnp.int32)
+    dag_pairs, mask, counts = make_shell_dag_pairs(reps)
+
+    expected = np.array(
+        [
+            [3, 10],
+            [3, 5],
+            [3, 12],
+            [5, 10],
+            [10, 12],
+            [5, 12],
+        ],
+        dtype=np.int32,
+    )
+    assert dag_pairs.shape == (1, expected.shape[0], 2)
+    assert np.array_equal(dag_pairs[0], expected)
+    assert np.all(mask)
+    assert int(counts[0]) == expected.shape[0]
+
+
+def test_make_shell_dag_pairs_handles_empty_shells_and_batch():
+    reps = jnp.array(
+        [
+            [2, -1, 7, 11],
+            [-1, -1, -1, -1],
+            [9, 4, 1, 8],
+        ],
+        dtype=jnp.int32,
+    )
+    dag_pairs, mask, counts = make_shell_dag_pairs(reps)
+
+    # Row 0 should only keep pairs involving shells 0, 2, and 3
+    expected_row0 = np.array(
+        [
+            [-1, -1],
+            [2, 7],
+            [2, 11],
+            [-1, -1],
+            [-1, -1],
+            [7, 11],
+        ]
+    )
+    assert np.array_equal(dag_pairs[0], expected_row0)
+    assert np.array_equal(mask[0], np.array([False, True, True, False, False, True]))
+    assert int(counts[0]) == 3
+
+    # Row 1 has no data
+    assert np.all(dag_pairs[1] == -1)
+    assert not np.any(mask[1])
+    assert int(counts[1]) == 0
+
+    # Row 2 should reorder columns so edges always go low -> high
+    expected_row2 = np.array(
+        [
+            [4, 9],
+            [1, 9],
+            [8, 9],
+            [1, 4],
+            [4, 8],
+            [1, 8],
+        ]
+    )
+    assert np.array_equal(dag_pairs[2], expected_row2)
+    assert np.all(mask[2])
+    assert int(counts[2]) == 6
+
+
+def test_make_shell_dag_pairs_accepts_1d_input():
+    reps = jnp.array([7, -1, 3], dtype=jnp.int32)
+    dag_pairs, mask, count = make_shell_dag_pairs(reps)
+
+    expected_pairs = np.array(
+        [
+            [-1, -1],
+            [3, 7],
+            [-1, -1],
+        ]
+    )
+    assert np.array_equal(dag_pairs, expected_pairs)
+    assert np.array_equal(mask, np.array([False, True, False]))
+    assert int(count) == 1
+
+
 def test_partition_disjoint_and_cover():
     n = 31
     p = 2
@@ -149,4 +279,3 @@ def test_partition_disjoint_and_cover():
     assert Xc.shape[0] == len(cset)
     assert Zr.shape[0] == len(rset)
     assert Zc.shape[0] == len(cset)
-

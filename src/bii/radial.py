@@ -69,9 +69,11 @@ def equal_expected_count_shells_from_Rmax(Rmax: float, num_shells: int, dim: int
         raise ValueError("num_shells must be >= 1")
     if Rmax <= 0:
         raise ValueError("Rmax must be > 0")
-    d = float(dim)
-    i = jnp.arange(1, num_shells + 1, dtype=jnp.float32)
-    return jnp.asarray(Rmax, jnp.float32) * (i / float(num_shells)) ** (1.0 / d)
+    dtype = jnp.asarray(Rmax).dtype
+    d = jnp.asarray(float(dim), dtype=dtype)
+    i = jnp.arange(1, num_shells + 1, dtype=dtype)
+    denom = jnp.asarray(float(num_shells), dtype=dtype)
+    return jnp.asarray(Rmax, dtype=dtype) * (i / denom) ** (1.0 / d)
 
 def equal_expected_count_shells_via_lambda(
     lambda_hat: float,
@@ -92,12 +94,16 @@ def equal_expected_count_shells_via_lambda(
     if target_expected_per_shell <= 0:
         raise ValueError("target_expected_per_shell must be > 0")
 
-    Vd = _unit_ball_volume(dim)
-    Delta = target_expected_per_shell / (lambda_hat * Vd)  # in r^d units
-    d = float(dim)
-    base = (jnp.asarray(r0, dtype=jnp.float32) ** d)
-    i = jnp.arange(1, num_shells + 1, dtype=jnp.float32)
-    return (base + i * jnp.asarray(Delta, dtype=jnp.float32)) ** (1.0 / d)
+    dtype = jnp.result_type(jnp.asarray(lambda_hat), jnp.asarray(target_expected_per_shell))
+    Vd = _unit_ball_volume(dim).astype(dtype)
+    Delta = (
+        jnp.asarray(target_expected_per_shell, dtype=dtype)
+        / (jnp.asarray(lambda_hat, dtype=dtype) * Vd)
+    )  # in r^d units
+    d = jnp.asarray(float(dim), dtype=dtype)
+    base = (jnp.asarray(r0, dtype=dtype) ** d)
+    i = jnp.arange(1, num_shells + 1, dtype=dtype)
+    return (base + i * Delta) ** (1.0 / d)
 
 
 # ------------------------------ Assign to shells (aligned to original columns) ------------------------------
@@ -120,8 +126,16 @@ def assign_to_shells_aligned(
     """
     d_sorted = DY_sorted[..., 0]                            # (n, m)
     S = radii.shape[0]
-    bins = jnp.digitize(d_sorted, radii, right=True)       # 0..S
-    shell_sorted = jnp.where(d_sorted <= radii[-1], bins - 1, -1).astype(jnp.int32)
+    radii = radii.astype(d_sorted.dtype)
+    eps = jnp.finfo(d_sorted.dtype).eps
+    tol_per_shell = 8.0 * eps * jnp.maximum(1.0, jnp.abs(radii))
+    exceeds = d_sorted[..., None] > (radii[None, None, :] + tol_per_shell)
+    shell_candidates = jnp.sum(exceeds, axis=-1).astype(jnp.int32)
+
+    max_r = radii[-1]
+    outer_tol = tol_per_shell[-1]
+    within_outer = d_sorted <= (max_r + outer_tol)
+    shell_sorted = jnp.where(within_outer, jnp.minimum(shell_candidates, S - 1), -1)
 
     # Remap to original column order: for each row, place sorted labels at cols_sorted positions
     def remap_row(shell_row, cols_row):
@@ -181,6 +195,132 @@ def sample_representatives_uniform_aligned(
 
     rep_cols, rep_dists = jax.vmap(sample_row)(shell_sorted, col_sorted, d_sorted, keys)
     return rep_cols, rep_dists
+
+
+def select_representatives_first_in_shell(
+    DY_sorted: Array,
+    shell_sorted: Array,
+    num_shells: int,
+) -> Tuple[Array, Array]:
+    """
+    Deterministically pick, for each shell, the closest column (first occurrence in
+    the sorted distance array). Useful when we need a fixed DAG per row.
+
+    Args:
+      DY_sorted   : (n, m, 2)
+      shell_sorted: (n, m)
+      num_shells  : number of shells (S) to extract.
+
+    Returns:
+      rep_cols_by_shell : (n, S) int32, -1 if shell empty
+      rep_dists_by_shell: (n, S) float32, NaN if shell empty
+    """
+    d_sorted = DY_sorted[..., 0]
+    col_sorted = DY_sorted[..., 1].astype(jnp.int32)
+    n, m = d_sorted.shape
+    S = int(num_shells)
+    shell_ids = jnp.arange(S, dtype=jnp.int32)
+    positions = jnp.arange(m, dtype=jnp.int32)
+
+    def select_row(row_shells, row_cols, row_dists):
+        def select_shell(s_idx):
+            mask = row_shells == s_idx
+            any_in_shell = jnp.any(mask)
+            pos = jnp.min(jnp.where(mask, positions, m))
+            col = jnp.where(any_in_shell, row_cols[pos], -1)
+            dist = jnp.where(any_in_shell, row_dists[pos], jnp.nan)
+            return col, dist
+
+        cols_s, dists_s = jax.vmap(select_shell)(shell_ids)
+        return cols_s, dists_s
+
+    rep_cols, rep_dists = jax.vmap(select_row)(shell_sorted, col_sorted, d_sorted)
+    return rep_cols, rep_dists
+
+
+def select_representatives_by_rank(
+    DY_sorted: Array,
+    num_shells: int,
+) -> Tuple[Array, Array]:
+    """
+    Deterministically pick the k-th nearest neighbour for the k-th annulus.
+
+    Args:
+      DY_sorted  : (n, m, 2) sorted distances/indices (output of make_distance).
+      num_shells : number of annuli/shells; annulus k selects the k-th nearest neighbour.
+
+    Returns:
+      rep_cols_by_shell : (n, S) int32, -1 if not enough neighbours.
+      rep_dists_by_shell: (n, S) float32, NaN if not enough neighbours.
+    """
+    d_sorted = DY_sorted[..., 0]
+    col_sorted = DY_sorted[..., 1].astype(jnp.int32)
+    n, m = d_sorted.shape
+    S = int(num_shells)
+    positions = jnp.arange(S, dtype=jnp.int32)
+
+    def select_row(row_cols, row_dists):
+        valid = positions < m
+        cols = jnp.where(valid, row_cols[positions], -1)
+        dists = jnp.where(valid, row_dists[positions], jnp.nan)
+        return cols, dists
+
+    rep_cols, rep_dists = jax.vmap(select_row)(col_sorted, d_sorted)
+    return rep_cols, rep_dists
+
+
+# ------------------------------ Shell DAG pairs ------------------------------
+
+def make_shell_dag_pairs(rep_cols_by_shell: Array) -> Tuple[Array, Array, Array]:
+    """
+    Build the largest possible DAG (all admissible pairs) from shell representatives.
+
+    Args:
+      rep_cols_by_shell: (n, S) or (S,) int32 with one column index per shell.
+                         Empty shells must be encoded as -1.
+
+    Returns:
+      dag_pairs : (n, K, 2) int32 with directed edges (i -> j) where j > i.
+                  K = S * (S - 1) / 2 and invalid rows are filled with -1.
+      pair_mask : (n, K) bool array marking which pairs in dag_pairs are valid.
+      pair_count: (n,) int32 number of valid edges per row.
+                  When the input was 1-D, the outputs are squeezed accordingly.
+    """
+    rep_cols = jnp.asarray(rep_cols_by_shell, dtype=jnp.int32)
+    squeeze = (rep_cols.ndim == 1)
+    if rep_cols.ndim not in (1, 2):
+        raise ValueError("rep_cols_by_shell must be a 1-D or 2-D array.")
+    if squeeze:
+        rep_cols = rep_cols[None, :]
+
+    _, S = rep_cols.shape
+    if S < 2:
+        shape_pairs = (rep_cols.shape[0], 0, 2)
+        dag_pairs = -jnp.ones(shape_pairs, dtype=jnp.int32)
+        mask = jnp.zeros(shape_pairs[:-1], dtype=jnp.bool_)
+        counts = jnp.zeros((rep_cols.shape[0],), dtype=jnp.int32)
+    else:
+        idx_i, idx_j = jnp.triu_indices(S, k=1)
+        idx_i = idx_i.astype(jnp.int32)
+        idx_j = idx_j.astype(jnp.int32)
+        left = rep_cols[:, idx_i]
+        right = rep_cols[:, idx_j]
+        valid = (left >= 0) & (right >= 0)
+
+        lo = jnp.minimum(left, right)
+        hi = jnp.maximum(left, right)
+        valid = valid & (hi > lo)
+
+        pairs = jnp.stack([lo, hi], axis=-1)
+        dag_pairs = jnp.where(valid[..., None], pairs, -1)
+        mask = valid
+        counts = mask.sum(axis=1, dtype=jnp.int32)
+
+    if squeeze:
+        dag_pairs = dag_pairs[0]
+        mask = mask[0]
+        counts = counts[0]
+    return dag_pairs, mask, counts
 
 
 # ------------------------------ Partition (same split for X and Z) ------------------------------
@@ -244,4 +384,3 @@ def split_XZ_by_partition(
     if X.shape[0] != Z.shape[0]:
         raise ValueError("X and Z must have the same number of rows.")
     return X[rows_idx], X[cols_idx], Z[rows_idx], Z[cols_idx]
-
