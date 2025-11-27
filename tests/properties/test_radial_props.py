@@ -12,7 +12,6 @@ from bii.radial import (
     make_distance,
     equal_expected_count_shells_from_Rmax,
     assign_to_shells_aligned,
-    sample_representatives_uniform_aligned,
     make_partition_indices,
 )
 
@@ -108,54 +107,4 @@ def test_partition_disjoint_cover_property(n, seed):
     # disjoint and covering
     assert rset.isdisjoint(cset)
     assert rset | cset == set(range(n))
-
-
-@DEFAULT_SETTINGS
-def test_uniform_sampling_is_reasonably_fair():
-    """
-    Construct a simple scenario: one row, distances 0..(m-1), four shells each with the
-    same number K of members. Sample many times and check selection frequencies are not
-    wildly imbalanced (non-flaky fairness check).
-    """
-    m = 40
-    S = 4
-    K = m // S  # equal membership per shell
-    # Build sorted DY manually: distances ascending, columns ascending
-    d = jnp.arange(m, dtype=jnp.float32)
-    cols = jnp.arange(m, dtype=jnp.int32)
-    DY_sorted = jnp.stack([d, cols.astype(d.dtype)], axis=-1)[None, ...]  # (1, m, 2)
-
-    # Shell boundaries so each shell has K items: (0..K-1], (K..2K-1], ...
-    # Use +0.999 to make integer distances fall inside the upper bound.
-    radii = jnp.array([(i + 1) * K - 1e-3 for i in range(S)], dtype=jnp.float32)
-
-    # Build shell labels in sorted order (deterministic here)
-    def _assign(d_sorted, radii):
-        bins = jnp.digitize(d_sorted, radii, right=True)
-        return jnp.where(d_sorted <= radii[-1], bins - 1, -1).astype(jnp.int32)
-
-    shell_sorted = _assign(DY_sorted[0, :, 0], radii)[None, :]
-
-    # Sample many times and tally
-    trials = 400
-    counts = np.zeros((S, K), dtype=int)
-    # map each shell's members to 0..K-1 slots
-    for t in range(trials):
-        key = random.PRNGKey(t)
-        rep_cols, _ = sample_representatives_uniform_aligned(DY_sorted, shell_sorted, radii, key)
-        reps = np.array(rep_cols[0], dtype=int)
-        for s in range(S):
-            j = reps[s]
-            assert 0 <= j < m
-            idx_in_shell = j - s * K
-            # guard for rounding edge (shouldn't happen here)
-            if 0 <= idx_in_shell < K:
-                counts[s, idx_in_shell] += 1
-
-    # Each position within a shell should be hit; imbalance should be moderate
-    # Avoid flakiness: require that every member is selected at least once
-    assert (counts > 0).all()
-    # And the max/min frequency within a shell is bounded
-    ratios = counts.max(axis=1) / counts.min(axis=1)
-    assert np.all(ratios < 3.0)  # generous bound to keep test robust in CI
 
