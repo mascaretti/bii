@@ -35,7 +35,7 @@ def test_make_lexico_dag_matches_pair_count():
     Y_rows, Y_cols, _ = _toy_data(n=10, p=2, seed=3)
     _, cols_sorted = make_distance(Y_rows, Y_cols)
     dag_pairs, mask, counts = make_lexico_dag(cols_sorted, k=4)
-    assert dag_pairs.shape[1] == 2  # floor(k/2)
+    assert dag_pairs.shape[1] == 3  # k-1 consecutive pairs
     assert mask.sum() == counts.sum()
 
 

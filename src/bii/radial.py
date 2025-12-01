@@ -32,8 +32,8 @@ def make_distance(Y_rows: Array, Y_cols: Array) -> Tuple[Array, Array]:
 
 def make_lexico_dag(sorted_indices: Array, k: int) -> Tuple[Array, Array, Array]:
     """
-    Build pairs from the first k neighbors per row by consecutive grouping:
-    (i1, i2), (i3, i4), ...
+    Build pairs from the first k neighbors per row by overlapping consecutive grouping:
+    (i1, i2), (i2, i3), (i3, i4), ... (i_{k-1}, i_k).
     Returns (pairs, mask, counts).
     """
     idx = jnp.asarray(sorted_indices, dtype=jnp.int32)
@@ -43,16 +43,18 @@ def make_lexico_dag(sorted_indices: Array, k: int) -> Tuple[Array, Array, Array]
         squeeze = True
     n, m = idx.shape
     k_eff = min(k, m)
-    num_pairs = k_eff // 2
+    num_pairs = max(k_eff - 1, 0)
     if num_pairs == 0:
         shape_pairs = (idx.shape[0], 0, 2)
         dag_pairs = -jnp.ones(shape_pairs, dtype=jnp.int32)
         mask = jnp.zeros(shape_pairs[:-1], dtype=jnp.bool_)
         counts = jnp.zeros((idx.shape[0],), dtype=jnp.int32)
     else:
-        neighbors = idx[:, : num_pairs * 2]
-        pairs = neighbors.reshape(n, num_pairs, 2)
-        valid = jnp.all(pairs >= 0, axis=-1)
+        neighbors = idx[:, :k_eff]
+        left = neighbors[:, :-1]
+        right = neighbors[:, 1:]
+        pairs = jnp.stack([left, right], axis=-1)  # (n, num_pairs, 2)
+        valid = (left >= 0) & (right >= 0)
         dag_pairs = jnp.where(valid[..., None], pairs, -1)
         mask = valid
         counts = mask.sum(axis=1, dtype=jnp.int32)
