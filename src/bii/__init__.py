@@ -1,5 +1,12 @@
 from .radial import (
     make_distance,
+    equal_expected_count_shells_from_Rmax,
+    equal_expected_count_shells_via_lambda,
+    assign_to_shells_aligned,
+    sample_representatives_uniform_aligned,
+    select_representatives_first_in_shell,
+    select_representatives_by_rank,
+    make_shell_dag_pairs,
     make_lexico_dag,
     make_partition_indices,
     split_XZ_by_partition,
@@ -17,6 +24,13 @@ from .data import generate_observations, generate_ppp_observations
 
 __all__ = [
     "make_distance",
+    "equal_expected_count_shells_from_Rmax",
+    "equal_expected_count_shells_via_lambda",
+    "assign_to_shells_aligned",
+    "sample_representatives_uniform_aligned",
+    "select_representatives_first_in_shell",
+    "select_representatives_by_rank",
+    "make_shell_dag_pairs",
     "make_lexico_dag",
     "make_partition_indices",
     "split_XZ_by_partition",
