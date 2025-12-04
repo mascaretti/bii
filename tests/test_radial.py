@@ -7,6 +7,7 @@ import jax.numpy as jnp
 from bii.radial import (
     make_distance,
     make_lexico_dag,
+    nearest_two_pairs,
     make_partition_indices,
     split_XZ_by_partition,
 )
@@ -37,6 +38,14 @@ def test_make_lexico_dag_matches_pair_count():
     dag_pairs, mask, counts = make_lexico_dag(cols_sorted, k=4)
     assert dag_pairs.shape[1] == 3  # k-1 consecutive pairs
     assert mask.sum() == counts.sum()
+
+
+def test_nearest_two_pairs_shape_and_mask():
+    Y_rows, Y_cols, _ = _toy_data(n=5, p=2, seed=4)
+    dag_pairs, mask, counts = nearest_two_pairs(Y_rows, Y_rows, Y_cols, Y_cols, jnp.ones(2))
+    assert dag_pairs.shape == (1, 1, 2)
+    assert mask.shape == (1, 1)
+    assert counts.shape == (1,)
 
 
 def test_partition_disjoint_and_cover():

@@ -32,6 +32,49 @@ def make_distance(Y_rows: Array, Y_cols: Array) -> Tuple[Array, Array]:
     return DY_sorted, cols_sorted
 
 
+def nearest_two_pairs(
+    X_rows: Array,
+    Z_rows: Array,
+    X_cols: Array,
+    Z_cols: Array,
+    weights: Array,
+) -> Tuple[Array, Array, Array]:
+    """
+    Build one pair per anchor using the two closest columns under a weighted metric.
+
+    Returns:
+        dag_pairs : (n_rows, 1, 2) int32, -1 if fewer than 2 cols.
+        mask      : (n_rows, 1) bool
+        counts    : (n_rows,) int32
+    """
+    X_rows = jnp.asarray(X_rows); Z_rows = jnp.asarray(Z_rows)
+    X_cols = jnp.asarray(X_cols); Z_cols = jnp.asarray(Z_cols)
+    w = jnp.asarray(weights)
+
+    if Z_rows.ndim == 1:
+        Z_rows = Z_rows[None, :]
+        X_rows = X_rows[None, :]
+
+    # Weighted distances in Z-space
+    diff = Z_rows[:, None, :] - Z_cols[None, :, :]
+    dists = jnp.sqrt(jnp.sum(w * diff * diff, axis=-1))
+    col_idx = jnp.broadcast_to(jnp.arange(Z_cols.shape[0])[None, :], dists.shape)
+    sort_idx = jnp.lexsort(keys=(col_idx, dists))
+    top2 = jnp.take_along_axis(col_idx, sort_idx, axis=1)[:, :2]  # (n_rows, 2)
+
+    # If fewer than 2 cols, mark invalid
+    valid = Z_cols.shape[0] >= 2
+    if not valid:
+        dag_pairs = -jnp.ones((Z_rows.shape[0], 0, 2), dtype=jnp.int32)
+        mask = jnp.zeros((Z_rows.shape[0], 0), dtype=jnp.bool_)
+        counts = jnp.zeros((Z_rows.shape[0],), dtype=jnp.int32)
+    else:
+        dag_pairs = top2.reshape(Z_rows.shape[0], 1, 2).astype(jnp.int32)
+        mask = jnp.ones((Z_rows.shape[0], 1), dtype=jnp.bool_)
+        counts = jnp.ones((Z_rows.shape[0],), dtype=jnp.int32)
+    return dag_pairs, mask, counts
+
+
 # ------------------------------ PPP shells (equal expected counts) ------------------------------
 
 
