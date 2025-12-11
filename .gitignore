@@ -196,6 +196,10 @@ acs-*.bib
 # hyperref
 *.brf
 
+# Experiment/report outputs (binary)
+reports/experiments/**/*.pdf
+reports/annuli_compare/*.pdf
+
 # knitr
 *-concordance.tex
 # TODO Uncomment the next line if you use knitr and want to ignore its generated tikz files
@@ -566,4 +570,3 @@ reports/main.pdf
 
 .DS_Store
 *.swp
-
