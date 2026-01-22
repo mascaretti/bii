@@ -86,7 +86,7 @@ def run_correlation_experiment(key, w_star, n_triplets, p, dataset_size, R=20,
         
         for krep in keys_rep:
             kdata, kfit = random.split(krep)
-            X, Z = make_iid(key=kdata, n=triplets, p=p, sig=sigma, tau=tau, w0=w_star)
+            X, Z = make_iid(key=kdata, n=triplets, p=p, sig=sigma, tau=tau, w0=w_star, pool_size=250)
             w_hat, _, loss_hist = fit(kfit, X, Z, sigma / jnp.sqrt(w_star), steps=steps, lr=lr)
             iid_errors.append(simplex_l1(w_hat, w_star))
             iid_losses.append(loss_hist[-1])
