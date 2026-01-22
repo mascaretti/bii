@@ -20,7 +20,7 @@ def one_anchor(k, X, nns=(1, 2), w=None, idx=None):
     triplet = jnp.array([order[0], order[nns[0]], order[nns[1]]]) if idx is None else jnp.array([k, order[nns[0]], order[nns[1]]])
     return triplet
 
-def make_iid(key, n, p, sig, tau, w0, on_source=False):
+def make_iid(key, n, p, sig, tau, w0, pool_size=500, on_source=False):
     T = []
     P = []
     for _ in range(n):
@@ -28,13 +28,13 @@ def make_iid(key, n, p, sig, tau, w0, on_source=False):
         P_curr = []
         key, subkey_x, subkey_eps, subkey_choice = random.split(key, 4)
         X = random.multivariate_normal(key=subkey_x, mean=jnp.zeros(p), 
-                                       cov=jnp.square(tau) * jnp.eye(p), shape=(500,))
+                                       cov=jnp.square(tau) * jnp.eye(p), shape=(pool_size,))
         epsilon = random.multivariate_normal(key=subkey_eps, mean=jnp.zeros(p), 
-                                            cov=jnp.diag(jnp.square(sig)), shape=(500,))
+                                            cov=jnp.diag(jnp.square(sig)), shape=(pool_size,))
         Y = X + epsilon
         Z = Y / jnp.sqrt(w0)[None, :]
         
-        idx = random.choice(key=subkey_choice, a=500, replace=False)
+        idx = random.choice(key=subkey_choice, a=pool_size, replace=False)
         if on_source:
             i, j, k = one_anchor(idx, Y)
         else:
