@@ -45,7 +45,7 @@ def make_iid(key, n, p, sig, tau, w0, on_source=False):
     T = jnp.asarray(T); P = jnp.asarray(P)
     return T, P
 
-def make_data(key, n_triplets, p, sig, tau, w0, on_source=False, data_multiplier=20, sample_size=None, origin_ratio=0.1, split_data=False, repeat_pairs=False):
+def make_data(key, n_triplets, p, sig, tau, w0, on_source=False, data_multiplier=20, sample_size=None, origin_ratio=0.1, split_data=False, repeat_pairs=False, return_indices=False):
     """
     Generate n_triplets disjoint triplets from a single dataset.
 
@@ -103,6 +103,8 @@ def make_data(key, n_triplets, p, sig, tau, w0, on_source=False, data_multiplier
     used_points = set()
     T = []
     P = []
+    # Also track indices
+    T_indices = []    
     for triplet in results:
         i, j, k = int(triplet[0]), int(triplet[1]), int(triplet[2])
         triplet_points = {i, j, k} if split_data is False else {j, k}
@@ -113,9 +115,11 @@ def make_data(key, n_triplets, p, sig, tau, w0, on_source=False, data_multiplier
             if split_data is False:
                 T.append([X[i], X[j], X[k]])
                 P.append([Z[i], Z[j], Z[k]])
+                T_indices.append([i, j, k])
             else:
                 T.append([X[i], X[col_idx][j], X[col_idx][k]])
                 P.append([Z[i], Z[col_idx][j], Z[col_idx][k]])
+                T_indices.append([i, col_idx[j], col_idx[k]])
             if len(T) >= n_triplets:
                 break
 
@@ -130,7 +134,11 @@ def make_data(key, n_triplets, p, sig, tau, w0, on_source=False, data_multiplier
 
     T = jnp.asarray(T)
     P = jnp.asarray(P)
-    return T, P
+    if return_indices:
+        T_indices = jnp.asarray(T_indices)
+        return T, P, T_indices
+    else:
+        return T, P
 
 def make_hybrid(key, n_triplets, p, sig, tau, w0, on_source=False, 
                 triplets_per_dataset=5, points_per_dataset=500):
@@ -212,3 +220,14 @@ def T_from_X(X):
     dj = jnp.sum((xj - xk)**2, axis=1)
     return (di <= dj).astype(jnp.float32)
 
+
+def count_shared_destinations(indices, split_data=True):
+    seen_triplets = set()
+    counter = 0
+    for idx in indices:
+        curr = {int(idx[1]), int(idx[2])} if split_data is True else {int(idx[i]) for i in idx}
+        if seen_triplets.isdisjoint(curr) is False:
+            counter += 1
+        seen_triplets.update(curr)
+    return counter
+        

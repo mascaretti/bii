@@ -135,25 +135,34 @@ def plot_correlation_experiment(results, n_triplets, output_path=None):
     q25_err_corr = jnp.quantile(errors_corr, 0.25, axis=1)
     q75_err_corr = jnp.quantile(errors_corr, 0.75, axis=1)
 
-    fig, ax1 = plt.subplots(1, 1, figsize=(5, 5))
+    fig, (ax2, ax1) = plt.subplots(1, 2, figsize=(14, 5))
     
     # Plot 1: Error vs. Fraction
     ax1.plot(n_triplets, med_err_iid, color='C0', linewidth=2, 
                 label=f'IID baseline')
     ax1.fill_between(n_triplets, q25_err_iid, q75_err_iid, 
                      alpha=0.15, color='C0')
+    overlay_powerlaw(n_triplets, med_err_iid, alpha=-0.5, anchor="middle", 
+                     label=r"ref slope $-1/2$", color='gray')
     ax1.plot(n_triplets, med_err_corr, marker='o', color='C1', 
              label='Correlated (single dataset)')
     ax1.fill_between(n_triplets, q25_err_corr, q75_err_corr, 
                      alpha=0.15, color='C1')
     
     ax1.set_xlabel('log triplets count')
-    ax1.set_ylabel('L1 error on simplex')
+    ax1.set_ylabel('log L1 error on simplex')
     ax1.set_title(f'Error vs. N. Triplets (Sample size={sample_size})')
     ax1.legend()
     plt.xscale("log")
     plt.yscale("log")
     ax1.grid(True, alpha=0.3)
+
+    shared_triplets = results['correlated']['overlaps']
+    ax2.plot(n_triplets, shared_triplets)
+    ax2.set_xlabel('triplets count')
+    ax2.set_ylabel('reappearences')
+    ax2.set_title('# of triplets with shared indices')
+    
     plt.tight_layout()
     
     if output_path is not None:
