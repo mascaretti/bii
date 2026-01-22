@@ -158,7 +158,8 @@ def plot_correlation_experiment(results, n_triplets, output_path=None):
     ax1.grid(True, alpha=0.3)
 
     shared_triplets = results['correlated']['overlaps']
-    ax2.plot(n_triplets, shared_triplets)
+    med_shared_triplets = jnp.median(shared_triplets, axis=1)
+    ax2.plot(n_triplets, med_shared_triplets)
     ax2.set_xlabel('triplets count')
     ax2.set_ylabel('reappearences')
     ax2.set_title('# of triplets with shared indices')
