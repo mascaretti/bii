@@ -1,10 +1,26 @@
+"""
+Posterior sampling for metric alignment using BlackJAX NUTS sampler.
+
+This module implements Bayesian inference with a Dirichlet prior on the weights.
+"""
+
 import jax
 from jax import numpy as jnp
 from jax import random
-from bii.data import T_from_X
-import optax
-from jax.scipy.special import log_ndtr
 import blackjax
+
+
+def T_from_X(X):
+    """Convert triplet data to binary comparisons."""
+    xi, xj, xk = X[:, 1], X[:, 2], X[:, 0]
+    di = jnp.sum((xi - xk)**2, axis=1)
+    dj = jnp.sum((xj - xk)**2, axis=1)
+    return (di <= dj).astype(jnp.float32)
+
+
+# Import likelihood functions from your existing code
+from jax.scipy.special import log_ndtr
+
 
 @jax.jit
 def delta_V_one_triplet(zi, zj, zk, w, sig2):
@@ -19,62 +35,28 @@ def delta_V_one_triplet(zi, zj, zk, w, sig2):
     V = 8.0 * (aa + bb - ab) + 12.0 * tr
     return delta, V
 
+
 @jax.jit
 def logP_log1mP_from_deltaV(delta, V):
     s = delta / jnp.sqrt(V + 1e-12)
-    logP = log_ndtr(-s)   # log Phi(-s)
-    log1mP = log_ndtr(s)  # log (1 - Phi(-s))
+    logP = log_ndtr(-s)
+    log1mP = log_ndtr(s)
     return logP, log1mP
+
 
 @jax.jit
 def loglik_theta(theta, T, Z, sig):
+    """Log likelihood of data given parameters."""
     sig2 = jnp.square(sig)
-    w = jax.nn.softmax(theta)  # simplex
+    w = jax.nn.softmax(theta)
     zi, zj, zk = Z[:, 1], Z[:, 2], Z[:, 0]
 
-    # vectorized delta/V over triplets
     def dv(zi, zj, zk):
         return delta_V_one_triplet(zi, zj, zk, w, sig2)
     delta, V = jax.vmap(dv)(zi, zj, zk)
 
     logP, log1mP = logP_log1mP_from_deltaV(delta, V)
     return jnp.sum(T * logP + (1.0 - T) * log1mP)
-
-def fit(key, X, Z, sig, steps=5000, lr=1e-2):
-    key_tr, _ = jax.random.split(key)
-    n = X.shape[0]
-    p = X.shape[2]
-    T = T_from_X(X)
-    theta = jnp.zeros((p,))   # uniform init
-    opt = optax.adam(lr)
-    opt_state = opt.init(theta)
-    
-    def neg_ll(th):
-        return -loglik_theta(th, T, Z, sig)
-    
-    valgrad = jax.jit(jax.value_and_grad(neg_ll))
-    
-    @jax.jit
-    def step(theta, opt_state):
-        loss, grads = valgrad(theta)
-        updates, opt_state = opt.update(grads, opt_state, theta)
-        theta = optax.apply_updates(theta, updates)
-        return theta, opt_state, loss
-    
-    # Store optimization trajectory
-    theta_history = [theta]
-    loss_history = []
-    
-    for _ in range(steps):
-        theta, opt_state, loss = step(theta, opt_state)
-        theta_history.append(theta)
-        loss_history.append(loss)
-    
-    # Convert to arrays
-    theta_history = jnp.stack(theta_history)  # (steps+1, p)
-    loss_history = jnp.array(loss_history)    # (steps,)
-    
-    return jax.nn.softmax(theta), theta_history, loss_history
 
 
 @jax.jit
@@ -158,40 +140,45 @@ def sample_posterior_nuts(key, X, Z, sig, alpha,
         initial_step_size=step_size,
     )
     
-    # Run warmup and sampling for each chain separately
+    # Run warmup for each chain
     keys_warmup = random.split(key, num_chains)
     
-    all_theta_samples = []
-    all_acceptance_rates = []
+    def run_warmup_single(init_pos, warmup_key):
+        (state, params), info = warmup.run(warmup_key, init_pos)
+        return state, params
     
-    for chain_idx in range(num_chains):
-        # Run warmup for this chain
-        (state, params), warmup_info = warmup.run(keys_warmup[chain_idx], init_positions[chain_idx])
+    # Vectorize warmup over chains
+    states, params_list = jax.vmap(run_warmup_single)(init_positions, keys_warmup)
+    
+    # Build sampling kernel for each chain
+    def make_kernel(params):
+        return blackjax.nuts(logprob_fn, **params)
+    
+    kernels = jax.vmap(make_kernel)(params_list)
+    
+    # Sampling loop
+    def one_step(states, key):
+        keys = random.split(key, num_chains)
         
-        # Build kernel for this chain
-        kernel = blackjax.nuts(logprob_fn, **params)
-        
-        # Sampling loop for this chain
-        def one_step(state, key):
-            new_state, info = kernel.step(key, state)
+        def step_single(state, kernel, step_key):
+            new_state, info = kernel.step(step_key, state)
             return new_state, (new_state.position, info.acceptance_rate)
         
-        # Generate sampling keys for this chain
-        key, subkey = random.split(key)
-        sample_keys = random.split(subkey, num_samples)
-        
-        # Run sampling
-        final_state, (theta_samples_chain, acceptance_rates_chain) = jax.lax.scan(
-            one_step, state, sample_keys
+        new_states, (positions, accept_rates) = jax.vmap(step_single)(
+            states, kernels, keys
         )
-        
-        all_theta_samples.append(theta_samples_chain)
-        all_acceptance_rates.append(acceptance_rates_chain)
+        return new_states, (positions, accept_rates)
     
-    # Stack results: (num_samples, num_chains, p)
-    theta_samples = jnp.stack(all_theta_samples, axis=1)
-    acceptance_rates = jnp.stack(all_acceptance_rates, axis=1)
+    # Generate sampling keys
+    key, subkey = random.split(key)
+    sample_keys = random.split(subkey, num_samples)
     
+    # Run sampling
+    final_states, (theta_samples, acceptance_rates) = jax.lax.scan(
+        one_step, states, sample_keys
+    )
+    
+    # theta_samples is (num_samples, num_chains, p)
     # Convert to w samples
     w_samples = jax.vmap(jax.vmap(jax.nn.softmax))(theta_samples)
     
