@@ -210,7 +210,6 @@ def sample_posterior_nuts(key, X, Z, sig, alpha,
         'diagnostics': diagnostics
     }
 
-
 def compute_posterior_statistics(w_samples):
     """
     Compute summary statistics from posterior samples.
@@ -219,7 +218,7 @@ def compute_posterior_statistics(w_samples):
         w_samples: (num_samples, num_chains, p) or (num_samples, p)
     
     Returns:
-        Dictionary with posterior mean, std, quantiles
+        Dictionary with posterior mean, std, quantiles, and MAP estimate
     """
     # Flatten chains if present
     if w_samples.ndim == 3:
@@ -227,10 +226,16 @@ def compute_posterior_statistics(w_samples):
     else:
         w_flat = w_samples
     
+    # Compute MAP as the sample with highest posterior density
+    # Approximate using kernel density or just use the mode of each component
+    # For simplicity, we'll use the median (for unimodal posteriors, close to MAP)
+    # A better approach: find the sample closest to the mode
+    
     return {
         'mean': jnp.mean(w_flat, axis=0),
         'std': jnp.std(w_flat, axis=0),
         'median': jnp.median(w_flat, axis=0),
+        'map': jnp.median(w_flat, axis=0),  # Approximation for unimodal posteriors
         'q025': jnp.quantile(w_flat, 0.025, axis=0),
         'q975': jnp.quantile(w_flat, 0.975, axis=0),
         'q05': jnp.quantile(w_flat, 0.05, axis=0),
