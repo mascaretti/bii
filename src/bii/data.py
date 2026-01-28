@@ -45,26 +45,37 @@ def make_iid(key, n, p, sig, tau, w0, pool_size=500, on_source=False):
     T = jnp.asarray(T); P = jnp.asarray(P)
     return T, P
 
-def make_data(key, n_triplets, p, sig, tau, w0, on_source=False, data_multiplier=20, sample_size=None, origin_ratio=0.1, split_data=False, repeat_pairs=False, return_indices=False):
+def make_data(key, n_triplets, p, sig, tau, w0, on_source=False, data_multiplier=20, 
+              sample_size=None, origin_ratio=0.1, split_data=False, repeat_pairs=False, 
+              return_indices=False, allow_anchor_reuse=False):
     """
-    Generate n_triplets disjoint triplets from a single dataset.
+    Generate n_triplets triplets from a single dataset.
 
     Args:
         n_triplets: Number of triplets to generate
         data_multiplier: How many points to generate per triplet (default: 20)
                         Total points generated = n_triplets * data_multiplier
+        sample_size: Fixed sample size (alternative to data_multiplier)
+        origin_ratio: Fraction of points that can be anchors
+        split_data: If True, anchors and destinations come from disjoint sets
+        repeat_pairs: If True, allow destination pairs to be reused across triplets
+        return_indices: If True, also return the indices of points in each triplet
+        allow_anchor_reuse: If True, allow the same anchor to be used multiple times
+                           (enables n_triplets > num_anchors for extreme correlation)
     """
     if sample_size is None and data_multiplier is not None:
         assert data_multiplier >= 1.
         n_points = n_triplets * data_multiplier  # Generate enough points
     elif sample_size is not None and data_multiplier is None:
-        assert sample_size >= n_triplets
+        # Relaxed assertion: only require sample_size >= 3 (minimum for one triplet)
+        # When allow_anchor_reuse=True, we can have n_triplets >> sample_size
+        assert sample_size >= 3, "Need at least 3 points for a triplet"
         n_points = sample_size
     else:
         raise TypeError("Select either sample_size or data_multiplier")
 
 
-    key, subkey_x, subkey_eps, subkey_choice = random.split(key, 4)
+    key, subkey_x, subkey_eps, subkey_choice, subkey_anchor = random.split(key, 5)
 
     # Generate dataset with n_points
     X = random.multivariate_normal(key=subkey_x, mean=jnp.zeros(p), 
@@ -76,7 +87,9 @@ def make_data(key, n_triplets, p, sig, tau, w0, on_source=False, data_multiplier
 
     # Sample anchor indices
     num_anchors = int(jnp.floor(n_points * origin_ratio))
-    if not repeat_pairs:
+    num_anchors = max(num_anchors, 1)  # At least one anchor
+    
+    if not repeat_pairs and not allow_anchor_reuse:
         # Each disjoint triplet uses 3 points (if not split_data) or 2 points (if split_data)
         points_per_triplet = 2 if split_data else 3
         max_possible_triplets = min(num_anchors, n_points // points_per_triplet)
@@ -86,20 +99,32 @@ def make_data(key, n_triplets, p, sig, tau, w0, on_source=False, data_multiplier
                 f"Cannot extract {n_triplets} disjoint triplets from {n_points} points "
                 f"with origin_ratio={origin_ratio}. Maximum possible: {max_possible_triplets}. "
                 f"Suggestions: (1) Increase origin_ratio (currently {origin_ratio}), "
-                f"(2) Increase data_multiplier/sample_size, or (3) Reduce n_triplets."
+                f"(2) Increase data_multiplier/sample_size, (3) Reduce n_triplets, "
+                f"or (4) Set allow_anchor_reuse=True for extreme correlation experiment."
             )
     
-    idx = random.choice(key=subkey_choice, a=n_points, shape=(num_anchors,), replace=False)
+    # Sample anchors (without replacement for the base set)
+    idx_base = random.choice(key=subkey_choice, a=n_points, shape=(num_anchors,), replace=False)
+    
+    # If we need more triplets than anchors, resample anchors with replacement
+    if allow_anchor_reuse and n_triplets > num_anchors:
+        # Repeat anchors as needed, with random selection
+        n_repeats = (n_triplets // num_anchors) + 1
+        idx_repeated = jnp.tile(idx_base, n_repeats)
+        # Shuffle to randomize which anchors get reused
+        idx = random.permutation(subkey_anchor, idx_repeated)[:n_triplets + num_anchors]
+    else:
+        idx = idx_base
 
     # Generate triplets for all anchors
     data = Y if on_source else X
     nn_1 = n_points // 500 if n_points >= 500 else 1
     nn_2 = (2 * (n_points // 500)) if n_points >= 500 else 2
     vectorized_one_anchor = vmap(one_anchor, in_axes=(0, None, None, None, None))
-    col_idx = jnp.setdiff1d(jnp.arange(n_points), idx)
+    col_idx = jnp.setdiff1d(jnp.arange(n_points), idx_base)  # Use base anchors for split
     results = vectorized_one_anchor(idx, data, (nn_1,nn_2), None, None) if split_data is False else vectorized_one_anchor(idx, data, (nn_1,nn_2), None, col_idx)
 
-    # Remove triplets that share ANY points
+    # Remove triplets that share ANY points (unless repeat_pairs or allow_anchor_reuse)
     used_points = set()
     T = []
     P = []
@@ -110,7 +135,10 @@ def make_data(key, n_triplets, p, sig, tau, w0, on_source=False, data_multiplier
         triplet_points = {i, j, k} if split_data is False else {j, k}
 
         # Check if any point in this triplet has been used before
-        if repeat_pairs or triplet_points.isdisjoint(used_points):
+        # With allow_anchor_reuse, we only check destination pairs (not anchors)
+        check_points = triplet_points if not allow_anchor_reuse else {j, k}
+        
+        if repeat_pairs or allow_anchor_reuse or check_points.isdisjoint(used_points):
             used_points.update(triplet_points)
             if split_data is False:
                 T.append([X[i], X[j], X[k]])
@@ -128,7 +156,7 @@ def make_data(key, n_triplets, p, sig, tau, w0, on_source=False, data_multiplier
     if actual_triplets < n_triplets:
         raise ValueError(
             f"Generated only {actual_triplets} triplets out of {n_triplets} requested "
-            f"(n_points={n_points}, anchors={num_anchors}). "
+            f"(n_points={n_points}, anchors={len(idx)}). "
             f"Increase data_multiplier (current: {data_multiplier}) or reduce n_triplets."
         )
 
@@ -230,4 +258,95 @@ def count_shared_destinations(indices, split_data=True):
             counter += 1
         seen_triplets.update(curr)
     return counter
+
+
+def compute_correlation_diagnostics(indices):
+    """
+    Compute detailed diagnostics for triplet correlation/overlap.
+    
+    Args:
+        indices: Array of shape (n_triplets, 3) with point indices [anchor, dest1, dest2]
+    
+    Returns:
+        Dictionary with:
+            - n_triplets: Total number of triplets
+            - n_unique_points: Number of unique points used
+            - n_unique_anchors: Number of unique anchor points
+            - n_unique_destinations: Number of unique destination points
+            - avg_anchor_reuse: Average times each anchor is reused
+            - max_anchor_reuse: Maximum times any anchor is reused
+            - avg_destination_reuse: Average times each destination is reused
+            - max_destination_reuse: Maximum times any destination is reused
+            - effective_n_ratio: n_unique_points / (3 * n_triplets) 
+                                (1.0 = no reuse, lower = more correlation)
+            - anchor_entropy: Entropy of anchor distribution (higher = more uniform)
+            - destination_entropy: Entropy of destination distribution
+    """
+    from collections import Counter
+    import numpy as np
+    
+    indices = np.asarray(indices)
+    n_triplets = len(indices)
+    
+    anchors = indices[:, 0]
+    destinations = indices[:, 1:].flatten()
+    all_points = indices.flatten()
+    
+    # Count reuse
+    anchor_counts = Counter(anchors)
+    dest_counts = Counter(destinations)
+    all_counts = Counter(all_points)
+    
+    n_unique_anchors = len(anchor_counts)
+    n_unique_destinations = len(dest_counts)
+    n_unique_points = len(all_counts)
+    
+    # Reuse statistics
+    anchor_reuse = np.array(list(anchor_counts.values()))
+    dest_reuse = np.array(list(dest_counts.values()))
+    
+    avg_anchor_reuse = np.mean(anchor_reuse)
+    max_anchor_reuse = np.max(anchor_reuse)
+    avg_destination_reuse = np.mean(dest_reuse)
+    max_destination_reuse = np.max(dest_reuse)
+    
+    # Effective sample size ratio
+    # If all points were unique, we'd have 3*n_triplets unique points
+    effective_n_ratio = n_unique_points / (3 * n_triplets)
+    
+    # Entropy (measures uniformity of reuse)
+    def entropy(counts):
+        probs = counts / counts.sum()
+        return -np.sum(probs * np.log(probs + 1e-10))
+    
+    anchor_entropy = entropy(anchor_reuse)
+    dest_entropy = entropy(dest_reuse)
+    
+    # Pairwise overlap: how many triplet pairs share at least one point?
+    # This is O(n^2) so only compute for small n
+    if n_triplets <= 1000:
+        triplet_sets = [set(indices[i]) for i in range(n_triplets)]
+        overlap_count = 0
+        for i in range(n_triplets):
+            for j in range(i + 1, n_triplets):
+                if not triplet_sets[i].isdisjoint(triplet_sets[j]):
+                    overlap_count += 1
+        pairwise_overlap_fraction = overlap_count / (n_triplets * (n_triplets - 1) / 2)
+    else:
+        pairwise_overlap_fraction = None  # Too expensive to compute
+    
+    return {
+        'n_triplets': n_triplets,
+        'n_unique_points': n_unique_points,
+        'n_unique_anchors': n_unique_anchors,
+        'n_unique_destinations': n_unique_destinations,
+        'avg_anchor_reuse': avg_anchor_reuse,
+        'max_anchor_reuse': max_anchor_reuse,
+        'avg_destination_reuse': avg_destination_reuse,
+        'max_destination_reuse': max_destination_reuse,
+        'effective_n_ratio': effective_n_ratio,
+        'anchor_entropy': anchor_entropy,
+        'destination_entropy': dest_entropy,
+        'pairwise_overlap_fraction': pairwise_overlap_fraction,
+    }
         
