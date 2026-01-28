@@ -336,7 +336,12 @@ def make_data_multi_neighbor(key, n_anchors, triplets_per_anchor, p, sig, tau, w
     # Distance computation basis
     data = Y_pool if on_source else X_pool
     
-    # For each anchor, find its 2*triplets_per_anchor nearest neighbors from dest pool
+    # Neighbor spacing to avoid collapse (same logic as make_data)
+    # With many points, nearest neighbors are at nearly identical distances
+    n_dest = len(dest_indices)
+    spacing = n_dest // 500 if n_dest >= 500 else 1
+    
+    # For each anchor, find neighbors with proper spacing
     T = []
     P = []
     T_indices = []
@@ -349,15 +354,25 @@ def make_data_multi_neighbor(key, n_anchors, triplets_per_anchor, p, sig, tau, w
         dest_points = data[dest_indices]
         dists = jnp.sum((dest_points - anchor_point[None, :]) ** 2, axis=1)
         
-        # Get the 2*triplets_per_anchor nearest destinations
-        n_neighbors_needed = 2 * triplets_per_anchor
-        nearest_dest_positions = jnp.argsort(dists)[:n_neighbors_needed]
-        nearest_dest_indices = dest_indices[nearest_dest_positions]
+        # Sort destinations by distance
+        sorted_dest_positions = jnp.argsort(dists)
         
-        # Form triplets: (anchor, 1st, 2nd), (anchor, 3rd, 4th), ...
+        # Form triplets with spaced neighbors:
+        # k=0: (spacing, 2*spacing), k=1: (3*spacing, 4*spacing), ...
         for k in range(triplets_per_anchor):
-            dest1_idx = int(nearest_dest_indices[2 * k])
-            dest2_idx = int(nearest_dest_indices[2 * k + 1])
+            pos1 = (2 * k + 1) * spacing - 1  # 0-indexed: spacing-1, 3*spacing-1, ...
+            pos2 = (2 * k + 2) * spacing - 1  # 0-indexed: 2*spacing-1, 4*spacing-1, ...
+            
+            # Check bounds
+            if pos2 >= n_dest:
+                raise ValueError(
+                    f"Not enough destinations for {triplets_per_anchor} triplets per anchor "
+                    f"with spacing={spacing}. Need position {pos2}, but only {n_dest} destinations. "
+                    f"Increase pool_size or reduce triplets_per_anchor."
+                )
+            
+            dest1_idx = int(dest_indices[sorted_dest_positions[pos1]])
+            dest2_idx = int(dest_indices[sorted_dest_positions[pos2]])
             
             T.append([X_pool[anchor_idx], X_pool[dest1_idx], X_pool[dest2_idx]])
             P.append([Z_pool[anchor_idx], Z_pool[dest1_idx], Z_pool[dest2_idx]])
