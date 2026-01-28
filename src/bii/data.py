@@ -260,6 +260,119 @@ def count_shared_destinations(indices, split_data=True):
     return counter
 
 
+def make_data_multi_neighbor(key, n_anchors, triplets_per_anchor, p, sig, tau, w0, 
+                              on_source=False, pool_size=None, return_indices=False):
+    """
+    Generate multiple distinct triplets per anchor to induce point correlation
+    without triplet duplication.
+    
+    For each anchor, we extract `triplets_per_anchor` triplets using different
+    neighbor pairs: (1st, 2nd), (3rd, 4th), (5th, 6th), etc.
+    
+    This creates correlation through point reuse while keeping all triplets unique.
+    
+    Args:
+        n_anchors: Number of distinct anchor points
+        triplets_per_anchor: Number of triplets to form per anchor (k)
+                            Total triplets = n_anchors * triplets_per_anchor
+        p: Dimension
+        sig: Noise std (scalar or array of shape (p,))
+        tau: Signal std
+        w0: True weights (p,)
+        on_source: If True, compute distances on noisy Y; else on clean X
+        pool_size: Total number of points to generate. If None, automatically
+                   set to ensure enough destinations:
+                   pool_size = n_anchors + 2 * n_anchors * triplets_per_anchor
+        return_indices: If True, also return point indices for each triplet
+    
+    Returns:
+        X: Triplet data (n_triplets, 3, p) - original embeddings  
+        Z: Normalized embeddings (n_triplets, 3, p)
+        indices (optional): (n_triplets, 3) array of point indices
+        
+    Example:
+        n_anchors=100, triplets_per_anchor=5 -> 500 triplets from 100 anchors
+        Each anchor contributes 5 triplets with neighbors:
+          (1st, 2nd), (3rd, 4th), (5th, 6th), (7th, 8th), (9th, 10th)
+    """
+    n_triplets = n_anchors * triplets_per_anchor
+    
+    # Need enough points for: anchors + (2 * triplets_per_anchor) destinations per anchor
+    # But destinations are shared across anchors, so we need a pool
+    # Minimum: n_anchors (for anchors) + 2*triplets_per_anchor (for at least one anchor's destinations)
+    # Safe default: enough that destinations aren't too heavily reused
+    if pool_size is None:
+        # Heuristic: want ~3-5x the minimum to allow some destination reuse but not extreme
+        min_destinations = 2 * triplets_per_anchor
+        pool_size = n_anchors + 4 * min_destinations
+    
+    # Ensure pool is large enough
+    min_pool = n_anchors + 2 * triplets_per_anchor
+    if pool_size < min_pool:
+        raise ValueError(
+            f"pool_size={pool_size} too small. Need at least {min_pool} "
+            f"(n_anchors={n_anchors} + 2*triplets_per_anchor={2*triplets_per_anchor})"
+        )
+    
+    key, subkey_x, subkey_eps, subkey_anchor = random.split(key, 4)
+    
+    # Generate the point cloud
+    X_pool = random.multivariate_normal(
+        key=subkey_x, mean=jnp.zeros(p),
+        cov=jnp.square(tau) * jnp.eye(p), shape=(pool_size,)
+    )
+    epsilon = random.multivariate_normal(
+        key=subkey_eps, mean=jnp.zeros(p),
+        cov=jnp.diag(jnp.square(sig)), shape=(pool_size,)
+    )
+    Y_pool = X_pool + epsilon
+    Z_pool = Y_pool / jnp.sqrt(w0)[None, :]
+    
+    # Select anchor indices (disjoint from destination pool)
+    all_indices = jnp.arange(pool_size)
+    anchor_indices = random.choice(subkey_anchor, all_indices, shape=(n_anchors,), replace=False)
+    dest_indices = jnp.setdiff1d(all_indices, anchor_indices)
+    
+    # Distance computation basis
+    data = Y_pool if on_source else X_pool
+    
+    # For each anchor, find its 2*triplets_per_anchor nearest neighbors from dest pool
+    T = []
+    P = []
+    T_indices = []
+    
+    for anchor_idx in anchor_indices:
+        anchor_idx = int(anchor_idx)
+        anchor_point = data[anchor_idx]
+        
+        # Compute distances to all destinations
+        dest_points = data[dest_indices]
+        dists = jnp.sum((dest_points - anchor_point[None, :]) ** 2, axis=1)
+        
+        # Get the 2*triplets_per_anchor nearest destinations
+        n_neighbors_needed = 2 * triplets_per_anchor
+        nearest_dest_positions = jnp.argsort(dists)[:n_neighbors_needed]
+        nearest_dest_indices = dest_indices[nearest_dest_positions]
+        
+        # Form triplets: (anchor, 1st, 2nd), (anchor, 3rd, 4th), ...
+        for k in range(triplets_per_anchor):
+            dest1_idx = int(nearest_dest_indices[2 * k])
+            dest2_idx = int(nearest_dest_indices[2 * k + 1])
+            
+            T.append([X_pool[anchor_idx], X_pool[dest1_idx], X_pool[dest2_idx]])
+            P.append([Z_pool[anchor_idx], Z_pool[dest1_idx], Z_pool[dest2_idx]])
+            T_indices.append([anchor_idx, dest1_idx, dest2_idx])
+    
+    T = jnp.asarray(T)
+    P = jnp.asarray(P)
+    
+    if return_indices:
+        T_indices = jnp.asarray(T_indices)
+        return T, P, T_indices
+    else:
+        return T, P
+
+
 def compute_correlation_diagnostics(indices):
     """
     Compute detailed diagnostics for triplet correlation/overlap.
