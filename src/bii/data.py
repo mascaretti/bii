@@ -261,7 +261,7 @@ def count_shared_destinations(indices, split_data=True):
 
 
 def make_data_multi_neighbor(key, n_anchors, triplets_per_anchor, p, sig, tau, w0, 
-                              on_source=False, pool_size=None, return_indices=False):
+                              on_source=False, pool_size=None, return_indices=False, return_pool=False):
     """
     Generate multiple distinct triplets per anchor to induce point correlation
     without triplet duplication.
@@ -381,9 +381,13 @@ def make_data_multi_neighbor(key, n_anchors, triplets_per_anchor, p, sig, tau, w
     T = jnp.asarray(T)
     P = jnp.asarray(P)
     
-    if return_indices:
+    if return_indices is True:
         T_indices = jnp.asarray(T_indices)
         return T, P, T_indices
+    elif return_indices and return_pool:
+        return T, P, T_indices, X_pool, Z_pool
+    elif return_indices is False and return_pool is False:
+        return T, P, X_pool, Z_pool
     else:
         return T, P
 
