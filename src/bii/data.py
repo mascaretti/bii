@@ -381,10 +381,10 @@ def make_data_multi_neighbor(key, n_anchors, triplets_per_anchor, p, sig, tau, w
     T = jnp.asarray(T)
     P = jnp.asarray(P)
     
-    if return_indices is True:
+    if return_indices is True and return_pool is False:
         T_indices = jnp.asarray(T_indices)
         return T, P, T_indices
-    elif return_indices and return_pool:
+    elif return_indices is True and return_pool is True:
         return T, P, T_indices, X_pool, Z_pool
     elif return_indices is False and return_pool is False:
         return T, P, X_pool, Z_pool
