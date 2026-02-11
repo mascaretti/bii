@@ -1,5 +1,6 @@
 # Ignore data
 /data/
+resume.log
 
 # Ignore images
 *.png
