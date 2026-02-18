@@ -1,14 +1,15 @@
+import blackjax
 import jax
+import optax
 from jax import numpy as jnp
 from jax import random
-from bii.data import T_from_X
-import optax
 from jax.scipy.special import log_ndtr
-import blackjax
+
+from bii.data import T_from_X
 
 
 @jax.jit
-def delta_V_one_triplet(zi, zj, zk, w, sig2):
+def delta_V_one_triplet(zi, zj, zk, w, sig2):  # noqa: N802
     a = zi - zk
     b = zj - zk
     delta = jnp.sum(w * (a * a - b * b))
@@ -22,7 +23,7 @@ def delta_V_one_triplet(zi, zj, zk, w, sig2):
 
 
 @jax.jit
-def logP_log1mP_from_deltaV(delta, V):
+def logP_log1mP_from_deltaV(delta, V):  # noqa: N802
     s = delta / jnp.sqrt(V + 1e-12)
     logP = log_ndtr(-s)  # log Phi(-s)
     log1mP = log_ndtr(s)  # log (1 - Phi(-s))
@@ -66,7 +67,6 @@ def loglik_theta(theta, T, Z, sig):
 
 def fit(key, X, Z, sig, steps=5000, lr=1e-2):
     key_tr, _ = jax.random.split(key)
-    n = X.shape[0]
     p = X.shape[2]
     T = T_from_X(X)
     theta = jnp.zeros((p,))  # uniform init
@@ -198,9 +198,9 @@ def sample_posterior_nuts(
         # Build kernel for this chain
         kernel = blackjax.nuts(logprob_fn, **params)
 
-        # Sampling loop for this chain
-        def one_step(state, key):
-            new_state, info = kernel.step(key, state)
+        # Sampling loop for this chain — capture kernel explicitly to avoid B023
+        def one_step(state, key, _kernel=kernel):
+            new_state, info = _kernel.step(key, state)
             return new_state, (new_state.position, info.acceptance_rate)
 
         # Generate sampling keys for this chain
@@ -245,10 +245,7 @@ def compute_posterior_statistics(w_samples):
         Dictionary with posterior mean, std, quantiles, and MAP estimate
     """
     # Flatten chains if present
-    if w_samples.ndim == 3:
-        w_flat = w_samples.reshape(-1, w_samples.shape[-1])
-    else:
-        w_flat = w_samples
+    w_flat = w_samples.reshape(-1, w_samples.shape[-1]) if w_samples.ndim == 3 else w_samples
 
     # Compute MAP as the sample with highest posterior density
     # Approximate using kernel density or just use the mode of each component

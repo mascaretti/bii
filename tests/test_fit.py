@@ -2,9 +2,10 @@
 
 import jax.numpy as jnp
 import jax.random as jr
+import numpy as np
 import pytest
 
-from bii.fit import fit_bii
+from bii.fit import _random_triplets, fit_bii
 
 EXPECTED_KEYS = {
     "w_samples",
@@ -60,3 +61,37 @@ def test_fit_smoke(prior):
 
     # Prior label round-trips
     assert result["prior"] == prior
+
+
+# ---------------------------------------------------------------------------
+# Unit tests: triplet formation
+# ---------------------------------------------------------------------------
+
+
+def test_random_triplets_shapes():
+    key = jr.PRNGKey(1)
+    x_pool, z_pool = _make_pool(key, n=80, p=4)
+    T, Z, idx = _random_triplets(key, x_pool, z_pool, n_triplets=30)
+    assert T.shape == (30,)
+    assert Z.shape == (30, 3, 4)
+    assert idx.shape == (30, 3)
+
+
+def test_random_triplets_binary_labels():
+    key = jr.PRNGKey(2)
+    x_pool, z_pool = _make_pool(key, n=50, p=3)
+    T, _, _ = _random_triplets(key, x_pool, z_pool, n_triplets=20)
+    assert set(np.array(T).tolist()).issubset({0.0, 1.0})
+
+
+# ---------------------------------------------------------------------------
+# Error handling
+# ---------------------------------------------------------------------------
+
+
+def test_fit_unknown_prior_raises():
+    key = jr.PRNGKey(3)
+    x_pool, z_pool = _make_pool(key)
+    with pytest.raises(ValueError, match="Unknown prior"):
+        fit_bii(key, x_pool, z_pool, sig=0.1, prior="bad_prior",
+                n_triplets=20, num_samples=10, num_warmup=10, num_chains=1)
