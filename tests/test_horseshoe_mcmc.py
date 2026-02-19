@@ -22,12 +22,21 @@ from bii.fit import fit_bii
 # Helpers
 # ---------------------------------------------------------------------------
 
-def make_sparse_pool(key, n, p_rel, p_noise, w_star_rel, sig, tau=1.0):
-    """Generate pool with sparse ground-truth metric (same as experiment)."""
+def make_sparse_pool(key, n, p_rel, p_noise, w_star_rel, sig, tau=1.0,
+                     noise_scale=0.05):
+    """Generate pool with approximately sparse ground-truth metric.
+
+    Noise dims get scale=noise_scale (nonzero) so the posterior is identifiable.
+    w_star is derived as normalised scale², matching what T_from_X (unweighted
+    Euclidean on X) implicitly uses as the true weight vector.
+    """
     p_total = p_rel + p_noise
-    w_star = jnp.concatenate([w_star_rel, jnp.zeros(p_noise)])
+    scale_rel = jnp.sqrt(jnp.array(w_star_rel)) * tau
+    scale_noise = noise_scale * tau * jnp.ones(p_noise)
+    scale = jnp.concatenate([scale_rel, scale_noise])
+    scale_sq = scale ** 2
+    w_star = scale_sq / jnp.sum(scale_sq)
     k1, k2 = jr.split(key)
-    scale = jnp.sqrt(w_star + 1e-30) * tau
     X_pool = jr.normal(k1, (n, p_total)) * scale
     sig_vec = jnp.broadcast_to(jnp.asarray(sig, dtype=float), (p_total,))
     Z_pool = X_pool + jr.normal(k2, (n, p_total)) * sig_vec
@@ -121,7 +130,9 @@ def test_horseshoe_noise_shrinkage():
     print(f"[horseshoe] w_mean (noise) = {np.round(noise_mean, 3)}")
     print(f"[horseshoe] noise max = {noise_mean.max():.4f}  (uniform = {1/p_total:.4f})")
 
-    assert noise_mean.max() < 1.0 / p_total, (
-        f"Horseshoe not shrinking noise dims: max={noise_mean.max():.3f} "
-        f">= uniform {1/p_total:.3f}"
+    # True noise weight ≈ 0.05² / (0.7 + 0.3 + 3*0.05²) ≈ 0.0025 each.
+    # Posterior mean for noise dims should be well below half of uniform (0.1).
+    assert noise_mean.max() < 0.5 / p_total, (
+        f"Horseshoe not shrinking noise dims: max={noise_mean.max():.4f} "
+        f">= 0.5/p={0.5/p_total:.4f}"
     )
