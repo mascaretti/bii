@@ -12,6 +12,7 @@ from jax import random
 from bii.data import T_from_X
 from bii.horseshoe import horseshoe_dim, horseshoe_to_simplex, log_horseshoe_posterior
 from bii.inference import loglik_w, loglik_w_per_triplet
+from bii.vi import run_vi, sample_vi
 
 # ---------------------------------------------------------------------------
 # Triplet formation
@@ -204,12 +205,19 @@ def fit_bii(
     # Prior hyperparams
     alpha=None,
     kappa=1.0,
+    # Inference method
+    inference_method="nuts",
     # NUTS params
     num_samples=1000,
     num_warmup=500,
     num_chains=4,
     step_size=1e-3,
     target_acceptance_rate=0.8,
+    # VI params
+    vi_steps=5000,
+    vi_lr=1e-2,
+    vi_elbo_samples=8,
+    vi_num_samples=2000,
 ):
     """Unified Bayesian inference pipeline for metric weights.
 
@@ -225,11 +233,16 @@ def fit_bii(
         triplet_strategy: ``"random"`` (only option for now).
         alpha: Dirichlet concentration; default ``ones(p)``.
         kappa: power-likelihood correction.
-        num_samples: posterior draws per chain.
+        inference_method: ``"nuts"`` or ``"vi"`` (mean-field variational).
+        num_samples: posterior draws per chain (NUTS).
         num_warmup: NUTS warmup steps.
         num_chains: number of MCMC chains.
         step_size: initial NUTS step size.
         target_acceptance_rate: NUTS target acceptance.
+        vi_steps: number of VI optimization steps.
+        vi_lr: Adam learning rate for VI.
+        vi_elbo_samples: MC samples per ELBO estimate.
+        vi_num_samples: samples drawn from fitted variational posterior.
 
     Returns:
         dict with keys ``w_samples``, ``raw_samples``, ``T``,
@@ -273,40 +286,66 @@ def fit_bii(
         raise ValueError(f"Unknown prior: {prior!r}")
 
     # ------------------------------------------------------------------
-    # Step 3 — run NUTS
+    # Step 3 — run inference
     # ------------------------------------------------------------------
-    key, key_nuts = random.split(key)
-    raw_samples, acceptance_rates = _run_nuts(
-        key_nuts,
-        logprob_fn,
-        init_position,
-        num_samples,
-        num_warmup,
-        num_chains,
-        step_size,
-        target_acceptance_rate,
-    )
+    if inference_method == "nuts":
+        key, key_nuts = random.split(key)
+        raw_samples, acceptance_rates = _run_nuts(
+            key_nuts,
+            logprob_fn,
+            init_position,
+            num_samples,
+            num_warmup,
+            num_chains,
+            step_size,
+            target_acceptance_rate,
+        )
 
-    # ------------------------------------------------------------------
-    # Step 4 — extract w, diagnostics, WAIC
-    # ------------------------------------------------------------------
-    if prior == "dirichlet":
-        w_samples = jax.vmap(jax.vmap(jax.nn.softmax))(raw_samples)
+        # ------------------------------------------------------------------
+        # Step 4 — extract w, diagnostics, WAIC
+        # ------------------------------------------------------------------
+        if prior == "dirichlet":
+            w_samples = jax.vmap(jax.vmap(jax.nn.softmax))(raw_samples)
+        else:
+            w_samples = jax.vmap(jax.vmap(horseshoe_to_simplex))(raw_samples)
+
+        # Diagnostics
+        mean_acc = jnp.mean(acceptance_rates)
+        acc_per_chain = jnp.mean(acceptance_rates, axis=0)
+
+        diagnostics = {
+            "acceptance_rate": mean_acc,
+            "acceptance_rate_per_chain": acc_per_chain,
+        }
+
+        if num_chains > 1:
+            diagnostics["rhat"] = _rhat(w_samples)
+            diagnostics["ess"] = _ess(w_samples)
+
+    elif inference_method == "vi":
+        if prior != "dirichlet":
+            raise ValueError("VI is only supported with the 'dirichlet' prior.")
+
+        key, key_vi, key_sample = random.split(key, 3)
+        mu, log_sigma, elbo_history = run_vi(
+            key_vi, logprob_fn, p,
+            num_steps=vi_steps, lr=vi_lr, num_elbo_samples=vi_elbo_samples,
+        )
+        theta_samples, w_flat_vi = sample_vi(key_sample, mu, log_sigma, vi_num_samples)
+
+        # Reshape to (S, 1, p) to match NUTS convention
+        raw_samples = theta_samples[:, None, :]
+        w_samples = w_flat_vi[:, None, :]
+
+        diagnostics = {
+            "elbo_history": elbo_history,
+            "final_elbo": elbo_history[-1],
+            "mu": mu,
+            "log_sigma": log_sigma,
+        }
+
     else:
-        w_samples = jax.vmap(jax.vmap(horseshoe_to_simplex))(raw_samples)
-
-    # Diagnostics
-    mean_acc = jnp.mean(acceptance_rates)
-    acc_per_chain = jnp.mean(acceptance_rates, axis=0)
-
-    diagnostics = {
-        "acceptance_rate": mean_acc,
-        "acceptance_rate_per_chain": acc_per_chain,
-    }
-
-    if num_chains > 1:
-        diagnostics["rhat"] = _rhat(w_samples)
-        diagnostics["ess"] = _ess(w_samples)
+        raise ValueError(f"Unknown inference_method: {inference_method!r}")
 
     # WAIC
     w_flat = w_samples.reshape(-1, p)
