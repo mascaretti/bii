@@ -18,23 +18,49 @@ from bii.inference import loglik_w, loglik_w_per_triplet
 # ---------------------------------------------------------------------------
 
 
-def _random_triplets(key, X_pool, Z_pool, n_triplets):
-    """Sample n_triplets random (anchor, dest1, dest2) from pool.
+def _random_triplets(key, X_pool, Z_pool, n_triplets, anchor_fraction=0.1):
+    """Partition pool into anchors/destinations; draw n_triplets pairs per anchor.
+
+    Steps:
+      1. Split N points into anchors (anchor_fraction) and destinations.
+      2. For each anchor, randomly sample n_triplets pairs of destinations.
+      3. Labels T are computed from clean distances in X_pool.
+
+    Total triplets returned = n_anchors * n_triplets.
 
     Convention: [:, 0] = anchor, [:, 1] = closer dest, [:, 2] = farther dest.
-    Labels T are computed from clean distances in X_pool.
     """
     N = X_pool.shape[0]
+    n_anchors = max(1, int(N * anchor_fraction))
 
-    # Draw 3 distinct indices per triplet
-    def _sample_one(key):
-        return random.choice(key, N, shape=(3,), replace=False)
+    key, k_split, k_pairs = random.split(key, 3)
 
-    keys = random.split(key, n_triplets)
-    indices = jax.vmap(_sample_one)(keys)  # (n_triplets, 3)
+    # Partition: first n_anchors of a random permutation are anchors
+    perm = random.permutation(k_split, N)
+    anchor_idx = perm[:n_anchors]
+    dest_idx = perm[n_anchors:]
+    n_dest = dest_idx.shape[0]
 
-    X = X_pool[indices]  # (n_triplets, 3, p)
-    Z = Z_pool[indices]  # (n_triplets, 3, p)
+    # For each anchor, draw n_triplets random pairs from destinations
+    # Total keys needed: n_anchors * n_triplets
+    total = n_anchors * n_triplets
+    pair_keys = random.split(k_pairs, total)
+
+    def _sample_pair(key):
+        return random.choice(key, n_dest, shape=(2,), replace=False)
+
+    pair_positions = jax.vmap(_sample_pair)(pair_keys)  # (total, 2)
+
+    # Build index array: (total, 3) = [anchor, dest1, dest2]
+    anchor_repeated = jnp.repeat(anchor_idx, n_triplets)  # (total,)
+    indices = jnp.stack([
+        anchor_repeated,
+        dest_idx[pair_positions[:, 0]],
+        dest_idx[pair_positions[:, 1]],
+    ], axis=1)  # (total, 3)
+
+    X = X_pool[indices]  # (total, 3, p)
+    Z = Z_pool[indices]  # (total, 3, p)
     T = T_from_X(X)
     return T, Z, indices
 
@@ -173,6 +199,7 @@ def fit_bii(
     sig,
     prior="dirichlet",
     n_triplets=500,
+    anchor_fraction=0.5,
     triplet_strategy="random",
     # Prior hyperparams
     alpha=None,
@@ -192,7 +219,9 @@ def fit_bii(
         Z_pool: (N, p) noisy/normalised embeddings.
         sig: noise std — scalar or (p,).
         prior: ``"dirichlet"`` or ``"horseshoe"``.
-        n_triplets: number of random triplets to form.
+        n_triplets: destination pairs per anchor. Total triplets =
+            ``int(N * anchor_fraction) * n_triplets``.
+        anchor_fraction: fraction of pool used as anchors (default 0.1).
         triplet_strategy: ``"random"`` (only option for now).
         alpha: Dirichlet concentration; default ``ones(p)``.
         kappa: power-likelihood correction.
@@ -217,7 +246,7 @@ def fit_bii(
     # Step 1 — form triplets
     # ------------------------------------------------------------------
     key, key_trip = random.split(key)
-    T, Z, indices = _random_triplets(key_trip, X_pool, Z_pool, n_triplets)
+    T, Z, indices = _random_triplets(key_trip, X_pool, Z_pool, n_triplets, anchor_fraction)
 
     # ------------------------------------------------------------------
     # Step 2 — build log-posterior & init
