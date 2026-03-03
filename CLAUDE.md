@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Bayesian estimation of metric weights from triplet comparisons. Given noisy observations, the code fits weights **w** on the simplex that parametrize a weighted Euclidean metric, using both maximum likelihood (MLE) and full Bayesian inference (MCMC).
+Bayesian estimation of metric weights from triplet comparisons. Given paired observations in a clean space X and noisy space Z, the code fits weights **w** on the simplex that parametrize a weighted Euclidean metric, using MCMC (NUTS) and mean-field variational inference.
 
 ## Commands
 
@@ -16,10 +16,10 @@ pip install -e ".[dev]"
 pytest tests
 
 # Run a single test file
-pytest tests/test_inference.py
+pytest tests/test_fit.py
 
 # Run a single test function
-pytest tests/test_inference.py::test_function_name -v
+pytest tests/test_fit.py::test_fit_smoke -v
 
 # Linting and formatting
 ruff check src tests
@@ -27,41 +27,52 @@ ruff format src tests
 
 # Type checking
 mypy src
+
+# Run an experiment (example)
+python experiments/exp_recovery.py
+
+# Build paper
+cd reports/paper && pdflatex main.tex && bibtex main && pdflatex main.tex && pdflatex main.tex
 ```
 
 ## Architecture
 
 ### Core Modules (src/bii/)
 
-**data.py** - Data generation
-- `make_iid()`: Generate IID triplet observations with fresh source/target points per triplet
-- `make_data()`: Extract disjoint triplets from a single dataset
-- `T_from_X()`: Convert distances to binary comparisons
+**fit.py** - Unified pipeline (main entry point)
+- `fit_bii()`: End-to-end: triplet formation → NUTS/VI → posterior summary + WAIC
+- `_random_triplets()`: Partition pool into anchors/destinations, form triplet pairs
+- `_compute_waic()`: WAIC from posterior samples
+- `_rhat()`, `_ess()`: Convergence diagnostics
 
-**inference.py** - Inference engine
-- `loglik_theta()`: Probit likelihood with softmax-constrained weights
-- `log_posterior()`: Full posterior (likelihood + Dirichlet prior)
-- `fit()`: MLE via Adam optimizer, returns weights on simplex
-
-**mcmc.py** - Bayesian posterior sampling
-- `sample_posterior_nuts()`: Multi-chain NUTS sampling via BlackJAX
-- `compute_posterior_statistics()`: Mean, std, quantiles, MAP
-- `compute_rhat()`, `compute_ess()`: Convergence diagnostics
-
-**triplets.py** - Triplet likelihood
+**inference.py** - Likelihood functions
 - `delta_V_one_triplet()`: Computes mean (delta) and variance (V) for Gaussian approximation
-- Core formula: P(i closer to k than j) = Φ(-delta/√V)
+- `loglik_w()`: Log-likelihood given weights on simplex
+- `loglik_w_per_triplet()`: Per-triplet log-likelihood (for WAIC)
+- `loglik_theta()`: Likelihood in unconstrained theta-space via softmax
+- `fit()`: Legacy MLE via Adam (use `fit_bii` instead)
+- `sample_posterior_nuts()`: Legacy NUTS (use `fit_bii` instead)
 
-**radial.py** - Geometric utilities for shell-based binning and DAG construction
+**horseshoe.py** - Horseshoe prior (Makalic & Schmidt 2015)
+- `log_horseshoe_posterior()`: Full log-posterior with InvGamma auxiliaries
+- `horseshoe_to_simplex()`: Extract w from packed position vector
+- Position vector: phi (p), log_lam_sq (p), log_nu (p), log_tau_sq (1), log_xi (1) = 3p+2
 
-**voronoi.py** - Voronoi tessellation tools
+**vi.py** - Mean-field variational inference
+- `run_vi()`: Fit mean-field Gaussian via ELBO maximization
+- `sample_vi()`: Draw samples from fitted variational posterior
 
-**utils.py** - Plotting functions for posteriors, traces, diagnostics
+**data.py** - Data generation
+- `T_from_X()`: Convert X triplets to binary labels (anchor convention: column 0)
+- `make_iid()`: Generate IID triplet observations
+- `make_data()`: Extract disjoint triplets from a single dataset
+
+**__init__.py** - Public API: exports `fit_bii` and `T_from_X`
 
 ### Data Flow
 
 ```
-Raw X → Add noise → Observed Z → Extract triplets → Binary T → Fit weights w
+X_pool, Z_pool → partition anchors/destinations → form triplets → labels T from X → NUTS/VI on w → posterior samples
 ```
 
 ### Key Patterns
@@ -69,27 +80,36 @@ Raw X → Add noise → Observed Z → Extract triplets → Binary T → Fit wei
 - **Weights**: Always constrained to simplex via softmax(theta)
 - **Vectorization**: Heavy use of `jax.vmap()` for broadcasting
 - **Random keys**: Always split before use with `random.split()`
-- **Data shapes**: (n, p) for points, (n, 3, p) for triplets
+- **Data shapes**: (N, p) for pool points, (n, 3, p) for triplets, (n,) for labels T
 
 ### Typical Workflow
 
 ```python
+import jax.numpy as jnp
 from jax import random
-from bii.data import make_iid
-from bii.inference import fit
-from bii.mcmc import sample_posterior_nuts, compute_posterior_statistics
+from bii import fit_bii
 
 key = random.PRNGKey(42)
-X, Z = make_iid(key, n_triplets=1000, p=5, sig=0.1, tau=1.0, w_star=w_true)
-w_hat, theta_hist, loss_hist = fit(key, X, Z, sig=0.1, steps=5000)
-
-# For full posterior
-samples = sample_posterior_nuts(key, X, Z, sig, alpha=jnp.ones(p), num_samples=2000)
-stats = compute_posterior_statistics(samples['w_samples'])
+# X_pool: (N, p_x) clean reference, Z_pool: (N, p_z) noisy representation
+result = fit_bii(key, X_pool, Z_pool, sig=0.1, prior="dirichlet",
+                 n_triplets=500, num_samples=2000)
+# result["w_samples"]: (num_samples, num_chains, p_z) on simplex
 ```
 
 ## Key Dependencies
 
 - **JAX**: Numerical computation and automatic differentiation
 - **BlackJAX**: MCMC samplers (NUTS)
-- **Optax**: Gradient-based optimization
+- **Optax**: Gradient-based optimization (VI + legacy MLE)
+
+## Project Structure
+
+```
+src/bii/           Core library
+tests/             Test suite (pytest)
+experiments/       Experiment scripts for paper (exp_*.py)
+reports/paper/     LaTeX paper (jmlr2e style)
+reports/theory/    Theory notes
+reports/HCP/       HCP data documentation
+data/interim/      HCP-YA CSV (not tracked)
+```

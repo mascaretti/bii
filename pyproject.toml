@@ -7,10 +7,15 @@ name = "bayesian-information-imbalance"
 version = "0.0.1"
 description = "Experiments and utilities for Bayesian information imbalance"
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "Andrea Mascaretti", email = "amascare@sissa.it" }]
-dependencies = []
+dependencies = [
+    "jax>=0.4",
+    "jaxlib>=0.4",
+    "blackjax>=1.0",
+    "optax>=0.2",
+]
 
 [project.optional-dependencies]
 dev = [
