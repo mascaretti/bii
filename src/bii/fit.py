@@ -250,7 +250,7 @@ def fit_bii(
         ``elapsed_seconds``, ``diagnostics``.
     """
     t0 = time.perf_counter()
-    p = X_pool.shape[1]
+    p = Z_pool.shape[1]
 
     if alpha is None:
         alpha = jnp.ones(p)
