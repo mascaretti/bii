@@ -12,6 +12,11 @@ from jax import random
 from bii.data import T_from_X
 from bii.horseshoe import horseshoe_dim, horseshoe_to_simplex, log_horseshoe_posterior
 from bii.inference import loglik_w, loglik_w_per_triplet
+from bii.sparse_dirichlet import (
+    log_sparse_dirichlet_posterior,
+    sparse_dirichlet_dim,
+    sparse_dirichlet_to_simplex,
+)
 from bii.vi import run_vi, sample_vi
 
 # ---------------------------------------------------------------------------
@@ -226,7 +231,7 @@ def fit_bii(
         X_pool: (N, p) clean embeddings.
         Z_pool: (N, p) noisy/normalised embeddings.
         sig: noise std — scalar or (p,).
-        prior: ``"dirichlet"`` or ``"horseshoe"``.
+        prior: ``"dirichlet"``, ``"horseshoe"``, or ``"sparse_dirichlet"``.
         n_triplets: destination pairs per anchor. Total triplets =
             ``int(N * anchor_fraction) * n_triplets``.
         anchor_fraction: fraction of pool used as anchors (default 0.1).
@@ -274,6 +279,14 @@ def fit_bii(
 
         init_position = jnp.zeros(p)
 
+    elif prior == "sparse_dirichlet":
+
+        def logprob_fn(position):
+            return log_sparse_dirichlet_posterior(position, T, Z, sig, kappa)
+
+        dim = sparse_dirichlet_dim(p)
+        init_position = jnp.zeros(dim)
+
     elif prior == "horseshoe":
 
         def logprob_fn(position):
@@ -306,6 +319,8 @@ def fit_bii(
         # ------------------------------------------------------------------
         if prior == "dirichlet":
             w_samples = jax.vmap(jax.vmap(jax.nn.softmax))(raw_samples)
+        elif prior == "sparse_dirichlet":
+            w_samples = jax.vmap(jax.vmap(sparse_dirichlet_to_simplex))(raw_samples)
         else:
             w_samples = jax.vmap(jax.vmap(horseshoe_to_simplex))(raw_samples)
 
@@ -323,8 +338,8 @@ def fit_bii(
             diagnostics["ess"] = _ess(w_samples)
 
     elif inference_method == "vi":
-        if prior != "dirichlet":
-            raise ValueError("VI is only supported with the 'dirichlet' prior.")
+        if prior not in ("dirichlet", "sparse_dirichlet"):
+            raise ValueError("VI is only supported with 'dirichlet' or 'sparse_dirichlet' priors.")
 
         key, key_vi, key_sample = random.split(key, 3)
         mu, log_sigma, elbo_history = run_vi(

@@ -29,7 +29,7 @@ def _make_pool(key, n=100, p=3, sig=0.1, tau=1.0):
     return x_pool, z_pool
 
 
-@pytest.mark.parametrize("prior", ["dirichlet", "horseshoe"])
+@pytest.mark.parametrize("prior", ["dirichlet", "horseshoe", "sparse_dirichlet"])
 def test_fit_smoke(prior):
     key = jr.PRNGKey(0)
     x_pool, z_pool = _make_pool(key, n=100, p=3)
