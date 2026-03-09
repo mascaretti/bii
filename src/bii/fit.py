@@ -59,11 +59,14 @@ def _random_triplets(key, X_pool, Z_pool, n_triplets, anchor_fraction=0.1):
 
     # Build index array: (total, 3) = [anchor, dest1, dest2]
     anchor_repeated = jnp.repeat(anchor_idx, n_triplets)  # (total,)
-    indices = jnp.stack([
-        anchor_repeated,
-        dest_idx[pair_positions[:, 0]],
-        dest_idx[pair_positions[:, 1]],
-    ], axis=1)  # (total, 3)
+    indices = jnp.stack(
+        [
+            anchor_repeated,
+            dest_idx[pair_positions[:, 0]],
+            dest_idx[pair_positions[:, 1]],
+        ],
+        axis=1,
+    )  # (total, 3)
 
     X = X_pool[indices]  # (total, 3, p)
     Z = Z_pool[indices]  # (total, 3, p)
@@ -342,11 +345,23 @@ def fit_bii(
             raise ValueError("VI is only supported with 'dirichlet' or 'sparse_dirichlet' priors.")
 
         key, key_vi, key_sample = random.split(key, 3)
+
+        # sparse_dirichlet has position dim = 2p+2, not p
+        vi_dim = sparse_dirichlet_dim(p) if prior == "sparse_dirichlet" else p
+
         mu, log_sigma, elbo_history = run_vi(
-            key_vi, logprob_fn, p,
-            num_steps=vi_steps, lr=vi_lr, num_elbo_samples=vi_elbo_samples,
+            key_vi,
+            logprob_fn,
+            vi_dim,
+            num_steps=vi_steps,
+            lr=vi_lr,
+            num_elbo_samples=vi_elbo_samples,
         )
         theta_samples, w_flat_vi = sample_vi(key_sample, mu, log_sigma, vi_num_samples)
+
+        # For sparse_dirichlet, extract w via sparse_dirichlet_to_simplex
+        if prior == "sparse_dirichlet":
+            w_flat_vi = jax.vmap(sparse_dirichlet_to_simplex)(theta_samples)
 
         # Reshape to (S, 1, p) to match NUTS convention
         raw_samples = theta_samples[:, None, :]
