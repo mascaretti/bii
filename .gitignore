@@ -1,6 +1,5 @@
 # Ignore data
 /data/
-resume.log
 
 # Ignore images
 *.png
@@ -67,7 +66,6 @@ flycheck_*.el
 *.log
 *.lot
 *.fls
-*.out
 *.toc
 *.fmt
 *.fot
