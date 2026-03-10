@@ -278,7 +278,7 @@ def fit_bii(
 
         def logprob_fn(theta):
             w = jax.nn.softmax(theta)
-            return _kappa * loglik_w(w, T, Z, sig) + jnp.sum((_alpha - 1.0) * jnp.log(w + 1e-12))
+            return _kappa * loglik_w(w, T, Z, sig) + jnp.sum(_alpha * jnp.log(w + 1e-12))
 
         init_position = jnp.zeros(p)
 

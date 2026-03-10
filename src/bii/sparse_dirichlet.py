@@ -87,7 +87,7 @@ def log_sparse_dirichlet_posterior(position, T, Z, sig, kappa=1.0, a=0.5, b=0.5)
     # log p(w|alpha) = sum (alpha_d-1) log w_d + log Gamma(sum alpha) - sum log Gamma(alpha_d)
     sum_alpha = jnp.sum(alpha)
     log_dir = (
-        jnp.sum((alpha - 1.0) * jnp.log(w + 1e-12))
+        jnp.sum(alpha * jnp.log(w + 1e-12))
         + gammaln(sum_alpha)
         - jnp.sum(gammaln(alpha))
     )
