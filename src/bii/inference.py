@@ -13,11 +13,25 @@ def delta_V_one_triplet(zi, zj, zk, w, sig2):  # noqa: N802
     a = zi - zk
     b = zj - zk
     delta = jnp.sum(w * (a * a - b * b))
-    w2_sig2 = (w * w) * sig2
-    aa = jnp.sum(w2_sig2 * (a * a))
-    bb = jnp.sum(w2_sig2 * (b * b))
-    ab = jnp.sum(w2_sig2 * (a * b))
-    tr = jnp.sum((w * w) * (sig2 * sig2))
+
+    if sig2.ndim == 1:
+        # Diagonal: sig2 is (p,) vector of variances
+        w2_sig2 = (w * w) * sig2
+        aa = jnp.sum(w2_sig2 * (a * a))
+        bb = jnp.sum(w2_sig2 * (b * b))
+        ab = jnp.sum(w2_sig2 * (a * b))
+        tr = jnp.sum((w * w) * (sig2 * sig2))
+    else:
+        # Full: sig2 is (p, p) covariance matrix
+        # M = diag(w) @ Sigma @ diag(w)
+        M = w[:, None] * sig2 * w[None, :]  # noqa: N806
+        aa = a @ M @ a
+        bb = b @ M @ b
+        ab = a @ M @ b
+        # tr(W Sigma W Sigma) where W = diag(w)
+        WS = w[:, None] * sig2  # noqa: N806  # diag(w) @ Sigma
+        tr = jnp.sum(WS * WS)
+
     V = 8.0 * (aa + bb - ab) + 12.0 * tr
     return delta, V
 
@@ -30,10 +44,17 @@ def logP_log1mP_from_deltaV(delta, V):  # noqa: N802
     return logP, log1mP
 
 
+def _sig_to_sig2(sig):
+    """Convert sig to sig2: square if vector/scalar, pass through if matrix."""
+    if sig.ndim <= 1:
+        return jnp.square(sig)
+    return sig  # already a covariance matrix
+
+
 @jax.jit
 def loglik_w(w, T, Z, sig):
     """Log-likelihood given weights w directly on the simplex."""
-    sig2 = jnp.square(sig)
+    sig2 = _sig_to_sig2(sig)
     zi, zj, zk = Z[:, 1], Z[:, 2], Z[:, 0]
 
     def dv(zi, zj, zk):
@@ -48,7 +69,7 @@ def loglik_w(w, T, Z, sig):
 @jax.jit
 def loglik_w_per_triplet(w, T, Z, sig):
     """Per-triplet log-likelihood given weights w on the simplex."""
-    sig2 = jnp.square(sig)
+    sig2 = _sig_to_sig2(sig)
     zi, zj, zk = Z[:, 1], Z[:, 2], Z[:, 0]
 
     def dv(zi, zj, zk):
