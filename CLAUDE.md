@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Bayesian estimation of metric weights from triplet comparisons. Given paired observations in a clean space X and noisy space Z, the code fits weights **w** on the simplex that parametrize a weighted Euclidean metric, using MCMC (NUTS) and mean-field variational inference.
 
+Design principle: **functional programming** — pure functions, composable, no classes. JAX is naturally FP; the package aligns with that.
+
 ## Commands
 
 ```bash
@@ -18,66 +20,65 @@ pytest tests
 # Run a single test file
 pytest tests/test_fit.py
 
-# Run a single test function
-pytest tests/test_fit.py::test_fit_smoke -v
-
 # Linting and formatting
 ruff check src tests
 ruff format src tests
 
 # Type checking
 mypy src
-
-# Run an experiment (example)
-python experiments/exp_recovery.py
-
-# Build paper
-cd reports/paper && pdflatex main.tex && bibtex main && pdflatex main.tex && pdflatex main.tex
 ```
 
 ## Architecture
 
 ### Core Modules (src/bii/)
 
-**fit.py** - Unified pipeline (main entry point)
-- `fit_bii()`: End-to-end: triplet formation → NUTS/VI → posterior summary + WAIC
-- `_random_triplets()`: Partition pool into anchors/destinations, form triplet pairs
-- `_compute_waic()`: WAIC from posterior samples
-- `_rhat()`, `_ess()`: Convergence diagnostics
+**data.py** — Triplet formation (pure functions)
+- `T_from_X()`: Convert X triplets to binary labels (anchor convention: column 0)
+- `make_triplets()`: Partition pool into anchors/destinations, form triplet pairs. Returns `(T, X, Z, indices)`.
 
-**inference.py** - Likelihood functions
-- `delta_V_one_triplet()`: Computes mean (delta) and variance (V) for Gaussian approximation
+**inference.py** — Likelihood functions (all pure, JIT-compiled)
+- `delta_V_one_triplet()`: Mean (delta) and variance (V) for Gaussian approximation
 - `loglik_w()`: Log-likelihood given weights on simplex
 - `loglik_w_per_triplet()`: Per-triplet log-likelihood (for WAIC)
 - `loglik_theta()`: Likelihood in unconstrained theta-space via softmax
-- `fit()`: Legacy MLE via Adam (use `fit_bii` instead)
-- `sample_posterior_nuts()`: Legacy NUTS (use `fit_bii` instead)
+- Supports scalar, diagonal (p,), and full (p, p) covariance matrices
 
-**horseshoe.py** - Horseshoe prior (Makalic & Schmidt 2015)
-- `log_horseshoe_posterior()`: Full log-posterior with InvGamma auxiliaries
-- `horseshoe_to_simplex()`: Extract w from packed position vector
-- Position vector: phi (p), log_lam_sq (p), log_nu (p), log_tau_sq (1), log_xi (1) = 3p+2
+**priors.py** — Prior log-densities as composable factory functions
+- `make_dirichlet_logposterior()`: Returns `logprob_fn(theta) -> scalar`
+- `make_sparse_dirichlet_logposterior()`: Returns `logprob_fn(position) -> scalar`
+- `sparse_dirichlet_dim()`, `sparse_dirichlet_to_simplex()`: Position vector helpers
 
-**vi.py** - Mean-field variational inference
-- `run_vi()`: Fit mean-field Gaussian via ELBO maximization
-- `sample_vi()`: Draw samples from fitted variational posterior
+**sampling.py** — MCMC + VI runners (prior-agnostic)
+- `run_nuts()`: Multi-chain NUTS via BlackJAX
+- `run_vi()`: Mean-field Gaussian via ELBO maximization
+- `sample_vi()`: Draw from fitted variational posterior
 
-**data.py** - Data generation
-- `T_from_X()`: Convert X triplets to binary labels (anchor convention: column 0)
-- `make_iid()`: Generate IID triplet observations
-- `make_data()`: Extract disjoint triplets from a single dataset
+**diagnostics.py** — Posterior diagnostics
+- `compute_waic()`: WAIC from posterior samples
+- `compute_rhat()`: Gelman-Rubin R-hat
+- `compute_ess()`: Effective sample size
 
-**__init__.py** - Public API: exports `fit_bii` and `T_from_X`
+**fit.py** — Thin composition layer
+- `fit_bii()`: Orchestrates triplets → logposterior → sampling → diagnostics
+
+**__init__.py** — Full public API exports all building blocks
 
 ### Data Flow
 
 ```
-X_pool, Z_pool → partition anchors/destinations → form triplets → labels T from X → NUTS/VI on w → posterior samples
+X_pool, Z_pool → make_triplets → (T, X, Z, indices)
+                                        ↓
+                            make_*_logposterior(T, Z, sig, ...)
+                                        ↓
+                              run_nuts / run_vi → raw_samples
+                                        ↓
+                             softmax → w_samples → compute_waic
 ```
 
 ### Key Patterns
 
 - **Weights**: Always constrained to simplex via softmax(theta)
+- **Composable priors**: `make_*_logposterior` closes over data, returns pure `logprob_fn`
 - **Vectorization**: Heavy use of `jax.vmap()` for broadcasting
 - **Random keys**: Always split before use with `random.split()`
 - **Data shapes**: (N, p) for pool points, (n, 3, p) for triplets, (n,) for labels T
@@ -85,31 +86,35 @@ X_pool, Z_pool → partition anchors/destinations → form triplets → labels T
 ### Typical Workflow
 
 ```python
-import jax.numpy as jnp
 from jax import random
 from bii import fit_bii
 
 key = random.PRNGKey(42)
-# X_pool: (N, p_x) clean reference, Z_pool: (N, p_z) noisy representation
 result = fit_bii(key, X_pool, Z_pool, sig=0.1, prior="dirichlet",
                  n_triplets=500, num_samples=2000)
 # result["w_samples"]: (num_samples, num_chains, p_z) on simplex
+```
+
+Or compose your own pipeline:
+
+```python
+from bii import make_triplets, make_dirichlet_logposterior, run_nuts
+
+T, X, Z, idx = make_triplets(key, X_pool, Z_pool, n_triplets=500)
+logprob_fn = make_dirichlet_logposterior(T, Z, sig=0.1, alpha=ones(p))
+raw_samples, acc = run_nuts(key, logprob_fn, zeros(p), num_samples=2000, ...)
 ```
 
 ## Key Dependencies
 
 - **JAX**: Numerical computation and automatic differentiation
 - **BlackJAX**: MCMC samplers (NUTS)
-- **Optax**: Gradient-based optimization (VI + legacy MLE)
+- **Optax**: Gradient-based optimization (VI)
 
 ## Project Structure
 
 ```
 src/bii/           Core library
 tests/             Test suite (pytest)
-experiments/       Experiment scripts for paper (exp_*.py)
-reports/paper/     LaTeX paper (jmlr2e style)
-reports/theory/    Theory notes
-reports/HCP/       HCP data documentation
-data/interim/      HCP-YA CSV (not tracked)
+pyproject.toml     Package metadata
 ```

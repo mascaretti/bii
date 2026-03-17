@@ -1,7 +1,21 @@
 """Bayesian Information Imbalance — metric weight inference from triplets."""
 
-from bii.data import T_from_X
+from bii.data import T_from_X, make_triplets
+from bii.diagnostics import compute_ess, compute_rhat, compute_waic
 from bii.fit import fit_bii
-from bii.ii import compute_ii
+from bii.priors import make_dirichlet_logposterior, make_sparse_dirichlet_logposterior
+from bii.sampling import run_nuts, run_vi, sample_vi
 
-__all__ = ["fit_bii", "T_from_X", "compute_ii"]
+__all__ = [
+    "fit_bii",
+    "T_from_X",
+    "make_triplets",
+    "make_dirichlet_logposterior",
+    "make_sparse_dirichlet_logposterior",
+    "run_nuts",
+    "run_vi",
+    "sample_vi",
+    "compute_waic",
+    "compute_rhat",
+    "compute_ess",
+]

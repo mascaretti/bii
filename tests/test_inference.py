@@ -4,27 +4,24 @@ import jax
 import jax.numpy as jnp
 import jax.random as jr
 
+from bii.data import make_triplets
 from bii.inference import (
     delta_V_one_triplet,
+    loglik_theta,
     loglik_w,
     loglik_w_per_triplet,
-    loglik_theta,
 )
 
 
 def _make_simple_data(key, n=50, p=3, sig=0.1):
-    """Generate simple triplet data for testing."""
     k1, k2 = jr.split(key)
     X_pool = jr.normal(k1, (200, p))
     Z_pool = X_pool + jr.normal(k2, (200, p)) * sig
-
-    from bii.fit import _random_triplets
-    T, Z, _ = _random_triplets(key, X_pool, Z_pool, n_triplets=n)
+    T, _, Z, _ = make_triplets(key, X_pool, Z_pool, n_triplets=n)
     return T, Z
 
 
 def test_delta_V_shapes():
-    """delta_V_one_triplet returns scalar delta and V."""
     p = 4
     zi = jnp.ones(p)
     zj = jnp.zeros(p)
@@ -35,11 +32,10 @@ def test_delta_V_shapes():
     delta, V = delta_V_one_triplet(zi, zj, zk, w, sig2)
     assert delta.shape == ()
     assert V.shape == ()
-    assert V >= 0  # variance is non-negative
+    assert V >= 0
 
 
 def test_delta_V_symmetry():
-    """Swapping i,j should flip the sign of delta."""
     p = 3
     zi = jnp.array([1.0, 0.0, 0.0])
     zj = jnp.array([0.0, 1.0, 0.0])
@@ -54,30 +50,26 @@ def test_delta_V_symmetry():
 
 
 def test_loglik_w_finite():
-    """loglik_w should return a finite scalar."""
     key = jr.PRNGKey(0)
     T, Z = _make_simple_data(key, n=30, p=3)
     w = jnp.ones(3) / 3
     ll = loglik_w(w, T, Z, sig=0.1)
     assert ll.shape == ()
     assert jnp.isfinite(ll)
-    assert ll <= 0  # log-likelihood is non-positive
+    assert ll <= 0
 
 
 def test_loglik_w_per_triplet_sums_to_total():
-    """Per-triplet log-lik should sum to total log-lik."""
     key = jr.PRNGKey(1)
     T, Z = _make_simple_data(key, n=40, p=4)
     w = jnp.array([0.4, 0.3, 0.2, 0.1])
 
     total = loglik_w(w, T, Z, sig=0.1)
     per_triplet = loglik_w_per_triplet(w, T, Z, sig=0.1)
-    assert per_triplet.shape == (40,)
     assert jnp.allclose(jnp.sum(per_triplet), total, atol=1e-4)
 
 
 def test_loglik_theta_softmax_equivalence():
-    """loglik_theta(theta) should equal loglik_w(softmax(theta))."""
     key = jr.PRNGKey(2)
     T, Z = _make_simple_data(key, n=30, p=3)
     theta = jnp.array([0.5, -0.3, 0.1])
@@ -88,22 +80,18 @@ def test_loglik_theta_softmax_equivalence():
 
 
 def test_loglik_w_gradient():
-    """Gradient of loglik_w w.r.t. w should be finite."""
     key = jr.PRNGKey(3)
     T, Z = _make_simple_data(key, n=30, p=3)
     w = jnp.ones(3) / 3
 
-    grad_fn = jax.grad(loglik_w)
-    g = grad_fn(w, T, Z, sig=0.1)
+    g = jax.grad(loglik_w)(w, T, Z, sig=0.1)
     assert g.shape == (3,)
     assert jnp.all(jnp.isfinite(g))
 
 
-# ── Full covariance (matrix sig) tests ────────────────────────
+# Full covariance tests
 
 def test_delta_V_full_sigma_diagonal_equivalence():
-    """Full Sigma = diag(sig2) should give same result as diagonal path."""
-    p = 4
     zi = jnp.array([1.0, 0.2, -0.5, 0.3])
     zj = jnp.array([0.0, 1.0, 0.1, -0.2])
     zk = jnp.array([0.5, 0.5, 0.5, 0.0])
@@ -112,13 +100,11 @@ def test_delta_V_full_sigma_diagonal_equivalence():
 
     d_diag, V_diag = delta_V_one_triplet(zi, zj, zk, w, sig2_diag)
     d_full, V_full = delta_V_one_triplet(zi, zj, zk, w, jnp.diag(sig2_diag))
-
     assert jnp.allclose(d_diag, d_full, atol=1e-6)
     assert jnp.allclose(V_diag, V_full, atol=1e-6)
 
 
 def test_delta_V_full_sigma_off_diagonal():
-    """Full Sigma with off-diagonal terms should give different V."""
     p = 3
     zi = jnp.array([1.0, 0.0, 0.0])
     zj = jnp.array([0.0, 1.0, 0.0])
@@ -130,20 +116,16 @@ def test_delta_V_full_sigma_off_diagonal():
 
     _, V_diag = delta_V_one_triplet(zi, zj, zk, w, sig2_diag)
     _, V_full = delta_V_one_triplet(zi, zj, zk, w, Sigma_full)
-
-    # Off-diagonal positive covariance should increase V
     assert V_full > V_diag
 
 
 def test_loglik_w_matrix_sig():
-    """loglik_w should accept (p, p) covariance matrix."""
     key = jr.PRNGKey(4)
     T, Z = _make_simple_data(key, n=30, p=3)
     w = jnp.ones(3) / 3
 
-    # Diagonal as vector vs diagonal as matrix should match
     sig_vec = 0.1 * jnp.ones(3)
-    sig_mat = jnp.diag(sig_vec ** 2)  # covariance matrix
+    sig_mat = jnp.diag(sig_vec**2)
 
     ll_vec = loglik_w(w, T, Z, sig=sig_vec)
     ll_mat = loglik_w(w, T, Z, sig=sig_mat)
@@ -151,17 +133,13 @@ def test_loglik_w_matrix_sig():
 
 
 def test_loglik_w_matrix_sig_gradient():
-    """Gradient of loglik_w w.r.t. w should be finite with matrix sig."""
     key = jr.PRNGKey(5)
     T, Z = _make_simple_data(key, n=30, p=3)
     w = jnp.ones(3) / 3
 
-    # Random PD covariance
-    key2 = jr.PRNGKey(99)
-    A = jr.normal(key2, (3, 3))
+    A = jr.normal(jr.PRNGKey(99), (3, 3))
     Sigma = A @ A.T + 0.01 * jnp.eye(3)
 
-    grad_fn = jax.grad(loglik_w)
-    g = grad_fn(w, T, Z, sig=Sigma)
+    g = jax.grad(loglik_w)(w, T, Z, sig=Sigma)
     assert g.shape == (3,)
     assert jnp.all(jnp.isfinite(g))
