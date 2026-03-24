@@ -5,27 +5,19 @@ from jax import numpy as jnp
 
 from bii.inference import delta_V_one_triplet, loglik_w_per_triplet
 
-
 def compute_waic(w_samples_flat, T, Z, sig):
-    """Compute WAIC from posterior w samples.
-
-    Args:
-        w_samples_flat: (S, p) posterior draws on the simplex.
-        T: (n,) binary labels.
-        Z: (n, 3, p) embeddings.
-        sig: noise std.
-
-    Returns:
-        WAIC scalar (deviance scale: ``-2 * elpd``).
-    """
-    per_triplet_ll = jax.vmap(lambda w: loglik_w_per_triplet(w, T, Z, sig))(w_samples_flat)
+    """Compute WAIC using lax.map to prevent OOM."""
+    # Sequential map over samples instead of vmap
+    per_triplet_ll = jax.lax.map(
+        lambda w: loglik_w_per_triplet(w, T, Z, sig),
+        w_samples_flat
+    )
 
     S = per_triplet_ll.shape[0]
     lppd = jnp.sum(jax.scipy.special.logsumexp(per_triplet_ll, axis=0) - jnp.log(S))
     p_waic = jnp.sum(jnp.var(per_triplet_ll, axis=0))
 
     return -2.0 * (lppd - p_waic)
-
 
 def compute_rhat(samples):
     """Gelman-Rubin R-hat convergence diagnostic.
@@ -117,7 +109,7 @@ def triplet_accuracy(w_samples, T, Z, sig):
         pred = (delta <= 0.0).astype(jnp.float32)
         return jnp.mean(pred == T)
 
-    return jax.vmap(accuracy_one)(w_samples)
+    return return jax.lax.map(accuracy_one, w_samples)
 
 
 def alignment_index(w_samples, T, Z, sig):
@@ -144,4 +136,4 @@ def alignment_index(w_samples, T, Z, sig):
         mean_ll = jnp.mean(ll)
         return 1.0 + mean_ll / jnp.log(2.0)
 
-    return jax.vmap(delta_one)(w_samples)
+    return return jax.lax.map(delta_one, w_samples)
