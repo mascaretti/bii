@@ -7,7 +7,13 @@ from jax import numpy as jnp
 from jax import random
 
 from bii.data import make_triplets
-from bii.diagnostics import compute_ess, compute_rhat, compute_waic
+from bii.diagnostics import (
+    compute_ess,
+    compute_rhat,
+    compute_waic,
+    triplet_accuracy,
+    weight_entropy,
+)
 from bii.priors import (
     make_dirichlet_logposterior,
     make_sparse_dirichlet_logposterior,
@@ -144,6 +150,12 @@ def fit_bii(
     w_flat = w_samples.reshape(-1, p)
     waic = compute_waic(w_flat, T, Z, sig) if compute_waic_flag else None
 
+    # Alignment measures
+    from bii.diagnostics import alignment_index as _alignment_index
+    entropy_scores = weight_entropy(w_flat)
+    accuracy_scores = triplet_accuracy(w_flat, T, Z, sig)
+    alignment_idx = _alignment_index(w_flat, T, Z, sig)
+
     elapsed = time.perf_counter() - t0
 
     return {
@@ -155,6 +167,11 @@ def fit_bii(
         "prior": prior,
         "kappa": kappa,
         "waic": waic,
+        "alignment": {
+            "entropy": entropy_scores,
+            "triplet_accuracy": accuracy_scores,
+            "alignment_index": alignment_idx,
+        },
         "elapsed_seconds": elapsed,
         "diagnostics": diagnostics,
     }

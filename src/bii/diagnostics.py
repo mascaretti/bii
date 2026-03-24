@@ -1,9 +1,9 @@
-"""Posterior diagnostics: WAIC, R-hat, ESS — all pure functions."""
+"""Posterior diagnostics: WAIC, R-hat, ESS, alignment — all pure functions."""
 
 import jax
 from jax import numpy as jnp
 
-from bii.inference import loglik_w_per_triplet
+from bii.inference import delta_V_one_triplet, loglik_w_per_triplet
 
 
 def compute_waic(w_samples_flat, T, Z, sig):
@@ -59,3 +59,89 @@ def compute_ess(samples):
     flat = samples.reshape(-1, p)
     acf1 = jnp.array([jnp.corrcoef(flat[:-1, i], flat[1:, i])[0, 1] for i in range(p)])
     return total / (1 + 2 * jnp.maximum(acf1, 0))
+
+
+def weight_entropy(w_samples):
+    """Normalized entropy of weight vectors on the simplex.
+
+    Measures concentration of the weight vector:
+    - 0 = uniform (no alignment / all nutrients equally important)
+    - 1 = point mass on one nutrient (perfect alignment)
+
+    Args:
+        w_samples: (S, p) posterior draws on the simplex.
+
+    Returns:
+        (S,) normalized alignment scores in [0, 1].
+    """
+    p = w_samples.shape[1]
+    # Clip to avoid log(0)
+    w_safe = jnp.clip(w_samples, 1e-30, None)
+    H = -jnp.sum(w_safe * jnp.log(w_safe), axis=1)
+    return 1.0 - H / jnp.log(p)
+
+
+def _sig_to_sig2(sig):
+    """Convert sig to sig2: square if vector/scalar, pass through if matrix."""
+    if sig.ndim <= 1:
+        return jnp.square(sig)
+    return sig
+
+
+def triplet_accuracy(w_samples, T, Z, sig):
+    """Triplet prediction accuracy for each posterior sample.
+
+    For each weight vector w, computes the fraction of triplets where
+    the model's predicted label matches the observed label T.
+    This is the BII analogue of the Information Imbalance scalar:
+    - ~0.5 = random (no alignment between X and weighted Z)
+    - ~1.0 = perfect alignment
+
+    Args:
+        w_samples: (S, p) posterior draws on the simplex.
+        T: (n,) binary triplet labels.
+        Z: (n, 3, p) triplet embeddings.
+        sig: noise std — scalar, (p,), or (p, p) covariance.
+
+    Returns:
+        (S,) accuracy values in [0, 1].
+    """
+    sig2 = _sig_to_sig2(sig)
+    zi, zj, zk = Z[:, 1], Z[:, 2], Z[:, 0]
+
+    def accuracy_one(w):
+        def dv(zi, zj, zk):
+            return delta_V_one_triplet(zi, zj, zk, w, sig2)
+        delta, _V = jax.vmap(dv)(zi, zj, zk)
+        # Model predicts T=1 when delta < 0 (column 1 closer than column 2)
+        pred = (delta <= 0.0).astype(jnp.float32)
+        return jnp.mean(pred == T)
+
+    return jax.vmap(accuracy_one)(w_samples)
+
+
+def alignment_index(w_samples, T, Z, sig):
+    """Normalised cross-entropy alignment index.
+
+    Maps the mean per-triplet log-likelihood to [0, 1]:
+      Δ(w) = 1 + ℓ̄(w) / log(2)
+    where ℓ̄ = (1/n) Σ_t log p(T_t | w).
+
+    - Random guessing (P=0.5): ℓ̄ = -log(2)  →  Δ = 0
+    - Perfect prediction (P→1): ℓ̄ → 0       →  Δ = 1
+
+    Args:
+        w_samples: (S, p) posterior draws on the simplex.
+        T: (n,) binary triplet labels.
+        Z: (n, 3, p) triplet embeddings.
+        sig: noise std — scalar, (p,), or (p, p) covariance.
+
+    Returns:
+        (S,) alignment index values in [0, 1].
+    """
+    def delta_one(w):
+        ll = loglik_w_per_triplet(w, T, Z, sig)  # (n,)
+        mean_ll = jnp.mean(ll)
+        return 1.0 + mean_ll / jnp.log(2.0)
+
+    return jax.vmap(delta_one)(w_samples)
