@@ -41,6 +41,8 @@ def fit_bii(
     vi_lr=1e-2,
     vi_elbo_samples=8,
     vi_num_samples=2000,
+    # Options
+    compute_waic_flag=True,
 ):
     """Unified Bayesian inference pipeline for metric weights.
 
@@ -138,9 +140,9 @@ def fit_bii(
     else:
         raise ValueError(f"Unknown inference_method: {inference_method!r}")
 
-    # WAIC
+    # WAIC (optional — can OOM with large triplet sets + many samples)
     w_flat = w_samples.reshape(-1, p)
-    waic = compute_waic(w_flat, T, Z, sig)
+    waic = compute_waic(w_flat, T, Z, sig) if compute_waic_flag else None
 
     elapsed = time.perf_counter() - t0
 
