@@ -33,7 +33,8 @@ def delta_V_one_triplet(zi, zj, zk, w, sig2):  # noqa: N802
         bb = b @ M @ b
         ab = a @ M @ b
         WS = w[:, None] * sig2  # noqa: N806
-        tr = jnp.sum(WS * WS)
+        tr = jnp.sum(M * sig2)
+        ##tr = jnp.sum(WS * WS)
 
     V = 8.0 * (aa + bb - ab) + 12.0 * tr
     return delta, V
