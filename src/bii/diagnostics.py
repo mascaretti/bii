@@ -136,4 +136,4 @@ def alignment_index(w_samples, T, Z, sig):
         mean_ll = jnp.mean(ll)
         return 1.0 + mean_ll / jnp.log(2.0)
 
-    return return jax.lax.map(delta_one, w_samples)
+    return jax.lax.map(delta_one, w_samples)
