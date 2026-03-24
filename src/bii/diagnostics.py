@@ -109,7 +109,7 @@ def triplet_accuracy(w_samples, T, Z, sig):
         pred = (delta <= 0.0).astype(jnp.float32)
         return jnp.mean(pred == T)
 
-    return return jax.lax.map(accuracy_one, w_samples)
+    return jax.lax.map(accuracy_one, w_samples)
 
 
 def alignment_index(w_samples, T, Z, sig):
