@@ -51,6 +51,7 @@ def logP_log1mP_from_deltaV(delta, V):  # noqa: N802
 
 def _sig_to_sig2(sig):
     """Convert sig to sig2: square if vector/scalar, pass through if matrix."""
+    sig = jnp.asarray(sig)
     if sig.ndim <= 1:
         return jnp.square(sig)
     return sig
