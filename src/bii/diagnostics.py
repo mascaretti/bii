@@ -99,14 +99,16 @@ def triplet_accuracy(w_samples, T, Z, sig):
     Returns:
         (S,) accuracy values in [0, 1].
     """
-    sig2 = _sig_to_sig2(sig)
     zi, zj, zk = Z[:, 1], Z[:, 2], Z[:, 0]
+    beta = jnp.exp(sig**2) * (jnp.exp(sig**2) - 1)
 
     def accuracy_one(w):
         def dv(zi, zj, zk):
-            return delta_V_one_triplet(zi, zj, zk, w, sig2)
+            return delta_V_one_triplet(zi, zj, zk, w,
+                                       beta * zi**2,
+                                       beta * zj**2,
+                                       beta * zk**2)
         delta, _V = jax.vmap(dv)(zi, zj, zk)
-        # Model predicts T=1 when delta < 0 (column 1 closer than column 2)
         pred = (delta <= 0.0).astype(jnp.float32)
         return jnp.mean(pred == T)
 
