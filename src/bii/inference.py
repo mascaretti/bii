@@ -6,38 +6,53 @@ from jax.scipy.special import log_ndtr
 
 
 @jax.jit
-def delta_V_one_triplet(zi, zj, zk, w, sig2):  # noqa: N802
-    """Compute mean (delta) and variance (V) for the Gaussian approximation.
+def delta_V_one_triplet(zi, zj, zk, w, sig2_i, sig2_j, sig2_k):  # noqa: N802
+    """Compute mean (mu) and variance (V) for the Gaussian probit approximation.
+
+    Supports both per-point isotropic noise (sig2_* scalars) and
+    general diagonal noise (sig2_* as (p,) vectors).
+
+    From Theorem 1 (sample.tex): y_l | z_l ~ N(z_l, Σ_l), Σ_l diagonal.
+
+    Convention: i = candidate 1, j = candidate 2, k = anchor.
 
     Args:
         zi, zj, zk: (p,) embeddings of the three triplet points.
         w: (p,) simplex weights.
-        sig2: (p,) diagonal variances, or (p, p) full covariance matrix.
+        sig2_i, sig2_j, sig2_k: per-point noise variances.
+            Scalar: per-point isotropic (σ_l² I).
+            (p,): general diagonal (Σ_l = diag(σ²_{l,d})).
 
     Returns:
-        ``(delta, V)`` — both scalars.
+        ``(mu, V)`` — both scalars.
     """
     a = zi - zk
     b = zj - zk
-    delta = jnp.sum(w * (a * a - b * b))
+    w2 = w * w
 
-    if sig2.ndim == 1:
-        w2_sig2 = (w * w) * sig2
-        aa = jnp.sum(w2_sig2 * (a * a))
-        bb = jnp.sum(w2_sig2 * (b * b))
-        ab = jnp.sum(w2_sig2 * (a * b))
-        tr = jnp.sum((w * w) * (sig2 * sig2))
-    else:
-        M = w[:, None] * sig2 * w[None, :]  # noqa: N806
-        aa = a @ M @ a
-        bb = b @ M @ b
-        ab = a @ M @ b
-        WS = w[:, None] * sig2  # noqa: N806
-        tr = jnp.sum(M * sig2)
-        ##tr = jnp.sum(WS * WS)
+    # S_u = Σ_i + Σ_k, S_v = Σ_j + Σ_k, S_k = Σ_k  (diagonal entries)
+    su = sig2_i + sig2_k
+    sv = sig2_j + sig2_k
 
-    V = 8.0 * (aa + bb - ab) + 12.0 * tr
-    return delta, V
+    # Mean: δ(w) + tr(W (S_u - S_v))  =  δ(w) + Σ w_d (σ²_{i,d} - σ²_{j,d})
+    mu = jnp.sum(w * (a * a - b * b)) + jnp.sum(w * (sig2_i - sig2_j))
+
+    # Variance of L: 4(a' W S_u W a + b' W S_v W b - 2 a' W S_k W b)
+    var_L = (
+        4.0 * jnp.sum(w2 * su * a * a)
+        + 4.0 * jnp.sum(w2 * sv * b * b)
+        - 8.0 * jnp.sum(w2 * sig2_k * a * b)
+    )
+
+    # Variance of Q: 2 tr((W S_u)²) + 2 tr((W S_v)²) - 4 tr((W S_k)²)
+    var_Q = (
+        2.0 * jnp.sum(w2 * su * su)
+        + 2.0 * jnp.sum(w2 * sv * sv)
+        - 4.0 * jnp.sum(w2 * sig2_k * sig2_k)
+    )
+
+    V = var_L + var_Q
+    return mu, V
 
 
 @jax.jit
@@ -59,12 +74,15 @@ def _sig_to_sig2(sig):
 
 @jax.jit
 def loglik_w(w, T, Z, sig):
-    """Log-likelihood given weights w directly on the simplex."""
+    """Log-likelihood given weights w directly on the simplex.
+
+    Homoscedastic path: all triplet members share the same noise σ.
+    """
     sig2 = _sig_to_sig2(sig)
     zi, zj, zk = Z[:, 1], Z[:, 2], Z[:, 0]
 
     def dv(zi, zj, zk):
-        return delta_V_one_triplet(zi, zj, zk, w, sig2)
+        return delta_V_one_triplet(zi, zj, zk, w, sig2, sig2, sig2)
 
     delta, V = jax.vmap(dv)(zi, zj, zk)
     logP, log1mP = logP_log1mP_from_deltaV(delta, V)
@@ -78,7 +96,7 @@ def loglik_w_per_triplet(w, T, Z, sig):
     zi, zj, zk = Z[:, 1], Z[:, 2], Z[:, 0]
 
     def dv(zi, zj, zk):
-        return delta_V_one_triplet(zi, zj, zk, w, sig2)
+        return delta_V_one_triplet(zi, zj, zk, w, sig2, sig2, sig2)
 
     delta, V = jax.vmap(dv)(zi, zj, zk)
     logP, log1mP = logP_log1mP_from_deltaV(delta, V)

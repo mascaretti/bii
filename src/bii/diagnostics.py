@@ -104,9 +104,8 @@ def triplet_accuracy(w_samples, T, Z, sig):
 
     def accuracy_one(w):
         def dv(zi, zj, zk):
-            return delta_V_one_triplet(zi, zj, zk, w, sig2)
+            return delta_V_one_triplet(zi, zj, zk, w, sig2, sig2, sig2)
         delta, _V = jax.vmap(dv)(zi, zj, zk)
-        # Model predicts T=1 when delta < 0 (column 1 closer than column 2)
         pred = (delta <= 0.0).astype(jnp.float32)
         return jnp.mean(pred == T)
 
