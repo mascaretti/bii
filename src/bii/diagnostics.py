@@ -5,11 +5,10 @@ from jax import numpy as jnp
 
 from bii.inference import delta_V_one_triplet, loglik_w_per_triplet
 
-def compute_waic(w_samples_flat, T, Z, sig):
+def compute_waic(w_samples_flat, T, Z, sig, noise_model="additive"):
     """Compute WAIC using lax.map to prevent OOM."""
-    # Sequential map over samples instead of vmap
     per_triplet_ll = jax.lax.map(
-        lambda w: loglik_w_per_triplet(w, T, Z, sig),
+        lambda w: loglik_w_per_triplet(w, T, Z, sig, noise_model),
         w_samples_flat
     )
 
@@ -81,30 +80,27 @@ def _sig_to_sig2(sig):
     return sig
 
 
-def triplet_accuracy(w_samples, T, Z, sig):
+def triplet_accuracy(w_samples, T, Z, sig, noise_model="additive"):
     """Triplet prediction accuracy for each posterior sample.
-
-    For each weight vector w, computes the fraction of triplets where
-    the model's predicted label matches the observed label T.
-    This is the BII analogue of the Information Imbalance scalar:
-    - ~0.5 = random (no alignment between X and weighted Z)
-    - ~1.0 = perfect alignment
 
     Args:
         w_samples: (S, p) posterior draws on the simplex.
         T: (n,) binary triplet labels.
         Z: (n, 3, p) triplet embeddings.
-        sig: noise std — scalar, (p,), or (p, p) covariance.
+        sig: noise std — scalar or (p,).
+        noise_model: ``"additive"`` or ``"multiplicative"``.
 
     Returns:
         (S,) accuracy values in [0, 1].
     """
-    sig2 = _sig_to_sig2(sig)
+    from bii.inference import _make_sig2_fn
+    sig2_fn = _make_sig2_fn(sig, noise_model)
     zi, zj, zk = Z[:, 1], Z[:, 2], Z[:, 0]
 
     def accuracy_one(w):
         def dv(zi, zj, zk):
-            return delta_V_one_triplet(zi, zj, zk, w, sig2, sig2, sig2)
+            return delta_V_one_triplet(zi, zj, zk, w,
+                                       sig2_fn(zi), sig2_fn(zj), sig2_fn(zk))
         delta, _V = jax.vmap(dv)(zi, zj, zk)
         pred = (delta <= 0.0).astype(jnp.float32)
         return jnp.mean(pred == T)
@@ -112,27 +108,24 @@ def triplet_accuracy(w_samples, T, Z, sig):
     return jax.lax.map(accuracy_one, w_samples)
 
 
-def alignment_index(w_samples, T, Z, sig):
+def alignment_index(w_samples, T, Z, sig, noise_model="additive"):
     """Normalised cross-entropy alignment index.
 
     Maps the mean per-triplet log-likelihood to [0, 1]:
       Δ(w) = 1 + ℓ̄(w) / log(2)
-    where ℓ̄ = (1/n) Σ_t log p(T_t | w).
-
-    - Random guessing (P=0.5): ℓ̄ = -log(2)  →  Δ = 0
-    - Perfect prediction (P→1): ℓ̄ → 0       →  Δ = 1
 
     Args:
         w_samples: (S, p) posterior draws on the simplex.
         T: (n,) binary triplet labels.
         Z: (n, 3, p) triplet embeddings.
-        sig: noise std — scalar, (p,), or (p, p) covariance.
+        sig: noise std — scalar or (p,).
+        noise_model: ``"additive"`` or ``"multiplicative"``.
 
     Returns:
         (S,) alignment index values in [0, 1].
     """
     def delta_one(w):
-        ll = loglik_w_per_triplet(w, T, Z, sig)  # (n,)
+        ll = loglik_w_per_triplet(w, T, Z, sig, noise_model)
         mean_ll = jnp.mean(ll)
         return 1.0 + mean_ll / jnp.log(2.0)
 

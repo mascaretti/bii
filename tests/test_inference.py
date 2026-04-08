@@ -216,3 +216,51 @@ def test_loglik_w_vector_sig():
     ll_scalar = loglik_w(w, T, Z, sig=sig_scalar)
     ll_vec = loglik_w(w, T, Z, sig=sig_vec)
     assert jnp.allclose(ll_scalar, ll_vec, atol=1e-4)
+
+
+# --- Multiplicative noise model ---
+
+def test_loglik_multiplicative_finite():
+    """Multiplicative likelihood should be finite for positive Z."""
+    key = jr.PRNGKey(5)
+    T, Z = _make_simple_data(key, n=30, p=3)
+    Z = jnp.abs(Z) + 1.0  # ensure positive
+    w = jnp.ones(3) / 3
+
+    ll = loglik_w(w, T, Z, sig=0.3, noise_model="multiplicative")
+    assert jnp.isfinite(ll)
+    assert ll <= 0
+
+
+def test_loglik_multiplicative_per_triplet_sums():
+    key = jr.PRNGKey(6)
+    T, Z = _make_simple_data(key, n=40, p=4)
+    Z = jnp.abs(Z) + 1.0
+    w = jnp.array([0.4, 0.3, 0.2, 0.1])
+
+    total = loglik_w(w, T, Z, sig=0.3, noise_model="multiplicative")
+    per_t = loglik_w_per_triplet(w, T, Z, sig=0.3, noise_model="multiplicative")
+    assert jnp.allclose(jnp.sum(per_t), total, atol=1e-4)
+
+
+def test_loglik_multiplicative_gradient():
+    key = jr.PRNGKey(7)
+    T, Z = _make_simple_data(key, n=30, p=3)
+    Z = jnp.abs(Z) + 1.0
+    w = jnp.ones(3) / 3
+
+    g = jax.grad(loglik_w)(w, T, Z, sig=0.3, noise_model="multiplicative")
+    assert g.shape == (3,)
+    assert jnp.all(jnp.isfinite(g))
+
+
+def test_loglik_multiplicative_differs_from_additive():
+    """Multiplicative and additive likelihoods should differ for positive Z."""
+    key = jr.PRNGKey(8)
+    T, Z = _make_simple_data(key, n=30, p=3)
+    Z = jnp.abs(Z) + 1.0
+    w = jnp.ones(3) / 3
+
+    ll_add = loglik_w(w, T, Z, sig=0.3, noise_model="additive")
+    ll_mul = loglik_w(w, T, Z, sig=0.3, noise_model="multiplicative")
+    assert not jnp.allclose(ll_add, ll_mul, atol=1e-4)

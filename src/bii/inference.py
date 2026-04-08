@@ -72,38 +72,58 @@ def _sig_to_sig2(sig):
     return sig
 
 
-@jax.jit
-def loglik_w(w, T, Z, sig):
+def _make_sig2_fn(sig, noise_model):
+    """Return a function z_l -> sig2_l for the given noise model."""
+    sig2 = _sig_to_sig2(sig)
+    if noise_model == "additive":
+        def sig2_fn(z_l):
+            return sig2
+        return sig2_fn
+    elif noise_model == "multiplicative":
+        beta = jnp.exp(sig2) * (jnp.exp(sig2) - 1.0)
+        def sig2_fn(z_l):
+            return beta * z_l**2
+        return sig2_fn
+    else:
+        raise ValueError(f"Unknown noise_model: {noise_model!r}")
+
+
+def loglik_w(w, T, Z, sig, noise_model="additive"):
     """Log-likelihood given weights w directly on the simplex.
 
-    Homoscedastic path: all triplet members share the same noise σ.
+    Args:
+        w: (p,) simplex weights.
+        T: (n,) binary triplet labels.
+        Z: (n, 3, p) triplet embeddings.
+        sig: noise std — scalar or (p,).
+        noise_model: ``"additive"`` (shared σ) or ``"multiplicative"`` (β·z²).
     """
-    sig2 = _sig_to_sig2(sig)
+    sig2_fn = _make_sig2_fn(sig, noise_model)
     zi, zj, zk = Z[:, 1], Z[:, 2], Z[:, 0]
 
     def dv(zi, zj, zk):
-        return delta_V_one_triplet(zi, zj, zk, w, sig2, sig2, sig2)
+        return delta_V_one_triplet(zi, zj, zk, w,
+                                   sig2_fn(zi), sig2_fn(zj), sig2_fn(zk))
 
     delta, V = jax.vmap(dv)(zi, zj, zk)
     logP, log1mP = logP_log1mP_from_deltaV(delta, V)
     return jnp.sum(T * logP + (1.0 - T) * log1mP)
 
 
-@jax.jit
-def loglik_w_per_triplet(w, T, Z, sig):
+def loglik_w_per_triplet(w, T, Z, sig, noise_model="additive"):
     """Per-triplet log-likelihood given weights w on the simplex."""
-    sig2 = _sig_to_sig2(sig)
+    sig2_fn = _make_sig2_fn(sig, noise_model)
     zi, zj, zk = Z[:, 1], Z[:, 2], Z[:, 0]
 
     def dv(zi, zj, zk):
-        return delta_V_one_triplet(zi, zj, zk, w, sig2, sig2, sig2)
+        return delta_V_one_triplet(zi, zj, zk, w,
+                                   sig2_fn(zi), sig2_fn(zj), sig2_fn(zk))
 
     delta, V = jax.vmap(dv)(zi, zj, zk)
     logP, log1mP = logP_log1mP_from_deltaV(delta, V)
     return T * logP + (1.0 - T) * log1mP
 
 
-@jax.jit
-def loglik_theta(theta, T, Z, sig):
+def loglik_theta(theta, T, Z, sig, noise_model="additive"):
     """Log-likelihood in unconstrained theta-space via softmax."""
-    return loglik_w(jax.nn.softmax(theta), T, Z, sig)
+    return loglik_w(jax.nn.softmax(theta), T, Z, sig, noise_model)

@@ -5,6 +5,7 @@ import jax
 import optax
 from jax import numpy as jnp
 from jax import random
+from tqdm import tqdm
 
 # ---------------------------------------------------------------------------
 # NUTS

@@ -14,12 +14,7 @@ from bii.diagnostics import (
     triplet_accuracy,
     weight_entropy,
 )
-from bii.priors import (
-    make_dirichlet_logposterior,
-    make_sparse_dirichlet_logposterior,
-    sparse_dirichlet_dim,
-    sparse_dirichlet_to_simplex,
-)
+from bii.priors import make_dirichlet_logposterior
 from bii.sampling import run_nuts, run_vi, sample_vi
 
 
@@ -28,8 +23,8 @@ def fit_bii(
     X_pool,
     Z_pool,
     sig,
-    prior="dirichlet",
-    n_triplets=500,
+    noise_model="additive",
+    n_triplets=15,
     anchor_fraction=0.5,
     # Prior hyperparams
     alpha=None,
@@ -56,8 +51,8 @@ def fit_bii(
         key: JAX random key.
         X_pool: (N, p_x) clean embeddings.
         Z_pool: (N, p_z) noisy/normalised embeddings.
-        sig: noise std — scalar, (p,), or (p, p) covariance.
-        prior: ``"dirichlet"`` or ``"sparse_dirichlet"``.
+        sig: noise std — scalar or (p,).
+        noise_model: ``"additive"`` or ``"multiplicative"``.
         n_triplets: destination pairs per anchor.
         anchor_fraction: fraction of pool used as anchors.
         alpha: Dirichlet concentration; default ``ones(p)``.
@@ -75,7 +70,7 @@ def fit_bii(
 
     Returns:
         dict with keys ``w_samples``, ``raw_samples``, ``T``, ``Z``,
-        ``triplet_indices``, ``prior``, ``kappa``, ``waic``,
+        ``triplet_indices``, ``kappa``, ``waic``,
         ``elapsed_seconds``, ``diagnostics``.
     """
     t0 = time.perf_counter()
@@ -89,15 +84,8 @@ def fit_bii(
     T, X, Z, indices = make_triplets(key_trip, X_pool, Z_pool, n_triplets, anchor_fraction)
 
     # Step 2 — build log-posterior
-    if prior == "dirichlet":
-        logprob_fn = make_dirichlet_logposterior(T, Z, sig, alpha, kappa)
-        init_position = jnp.zeros(p)
-    elif prior == "sparse_dirichlet":
-        logprob_fn = make_sparse_dirichlet_logposterior(T, Z, sig, kappa)
-        dim = sparse_dirichlet_dim(p)
-        init_position = jnp.zeros(dim)
-    else:
-        raise ValueError(f"Unknown prior: {prior!r}")
+    logprob_fn = make_dirichlet_logposterior(T, Z, sig, alpha, kappa, noise_model)
+    init_position = jnp.zeros(p)
 
     # Step 3 — run inference
     if inference_method == "nuts":
@@ -107,11 +95,7 @@ def fit_bii(
             num_samples, num_warmup, num_chains, step_size, target_acceptance_rate,
         )
 
-        # Extract w on simplex
-        if prior == "dirichlet":
-            w_samples = jax.vmap(jax.vmap(jax.nn.softmax))(raw_samples)
-        else:
-            w_samples = jax.vmap(jax.vmap(sparse_dirichlet_to_simplex))(raw_samples)
+        w_samples = jax.vmap(jax.vmap(jax.nn.softmax))(raw_samples)
 
         diagnostics = {
             "acceptance_rate": jnp.mean(acceptance_rates),
@@ -123,16 +107,12 @@ def fit_bii(
 
     elif inference_method == "vi":
         key, key_vi, key_sample = random.split(key, 3)
-        vi_dim = sparse_dirichlet_dim(p) if prior == "sparse_dirichlet" else p
 
         mu, log_sigma, elbo_history = run_vi(
-            key_vi, logprob_fn, vi_dim,
+            key_vi, logprob_fn, p,
             num_steps=vi_steps, lr=vi_lr, num_elbo_samples=vi_elbo_samples,
         )
         theta_samples, w_flat_vi = sample_vi(key_sample, mu, log_sigma, vi_num_samples)
-
-        if prior == "sparse_dirichlet":
-            w_flat_vi = jax.vmap(sparse_dirichlet_to_simplex)(theta_samples)
 
         raw_samples = theta_samples[:, None, :]
         w_samples = w_flat_vi[:, None, :]
@@ -148,13 +128,13 @@ def fit_bii(
 
     # WAIC (optional — can OOM with large triplet sets + many samples)
     w_flat = w_samples.reshape(-1, p)
-    waic = compute_waic(w_flat, T, Z, sig) if compute_waic_flag else None
+    waic = compute_waic(w_flat, T, Z, sig, noise_model) if compute_waic_flag else None
 
     # Alignment measures
     from bii.diagnostics import alignment_index as _alignment_index
     entropy_scores = weight_entropy(w_flat)
-    accuracy_scores = triplet_accuracy(w_flat, T, Z, sig)
-    alignment_idx = _alignment_index(w_flat, T, Z, sig)
+    accuracy_scores = triplet_accuracy(w_flat, T, Z, sig, noise_model)
+    alignment_idx = _alignment_index(w_flat, T, Z, sig, noise_model)
 
     elapsed = time.perf_counter() - t0
 
@@ -164,7 +144,6 @@ def fit_bii(
         "T": T,
         "Z": Z,
         "triplet_indices": indices,
-        "prior": prior,
         "kappa": kappa,
         "waic": waic,
         "alignment": {

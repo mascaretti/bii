@@ -10,7 +10,7 @@ from bii.diagnostics import (
     weight_entropy,
 )
 from bii.fit import fit_bii
-from bii.priors import make_dirichlet_logposterior, make_sparse_dirichlet_logposterior
+from bii.priors import make_dirichlet_logposterior
 from bii.sampling import run_nuts, run_vi, sample_vi
 
 __all__ = [
@@ -18,7 +18,6 @@ __all__ = [
     "T_from_X",
     "make_triplets",
     "make_dirichlet_logposterior",
-    "make_sparse_dirichlet_logposterior",
     "run_nuts",
     "run_vi",
     "sample_vi",

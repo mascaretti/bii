@@ -2,7 +2,6 @@
 
 import jax.numpy as jnp
 import jax.random as jr
-import pytest
 
 from bii.fit import fit_bii
 
@@ -12,7 +11,6 @@ EXPECTED_KEYS = {
     "T",
     "Z",
     "triplet_indices",
-    "prior",
     "kappa",
     "waic",
     "elapsed_seconds",
@@ -28,14 +26,13 @@ def _make_pool(key, n=100, p=3, sig=0.1, tau=1.0):
     return x_pool, z_pool
 
 
-@pytest.mark.parametrize("prior", ["dirichlet", "sparse_dirichlet"])
-def test_fit_smoke(prior):
+def test_fit_smoke():
     key = jr.PRNGKey(0)
     x_pool, z_pool = _make_pool(key, n=100, p=3)
 
     result = fit_bii(
         key, x_pool, z_pool, sig=0.1,
-        prior=prior, n_triplets=50,
+        n_triplets=50,
         num_samples=50, num_warmup=50, num_chains=1,
     )
 
@@ -47,12 +44,21 @@ def test_fit_smoke(prior):
     assert jnp.allclose(sums, 1.0, atol=1e-5)
     assert jnp.all(w >= 0)
     assert jnp.isfinite(result["waic"])
-    assert result["prior"] == prior
 
 
-def test_fit_unknown_prior_raises():
-    key = jr.PRNGKey(3)
-    x_pool, z_pool = _make_pool(key)
-    with pytest.raises(ValueError, match="Unknown prior"):
-        fit_bii(key, x_pool, z_pool, sig=0.1, prior="bad_prior",
-                n_triplets=20, num_samples=10, num_warmup=10, num_chains=1)
+def test_fit_multiplicative_smoke():
+    key = jr.PRNGKey(1)
+    x_pool, z_pool = _make_pool(key, n=100, p=3)
+    # Make z_pool positive for multiplicative model
+    z_pool = jnp.abs(z_pool) + 1.0
+
+    result = fit_bii(
+        key, x_pool, z_pool, sig=0.3,
+        noise_model="multiplicative",
+        n_triplets=50,
+        num_samples=50, num_warmup=50, num_chains=1,
+    )
+
+    assert set(result.keys()) >= EXPECTED_KEYS
+    w = result["w_samples"]
+    assert jnp.allclose(jnp.sum(w, axis=-1), 1.0, atol=1e-5)
