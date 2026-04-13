@@ -83,8 +83,20 @@ def fit_bii(
     key, key_trip = random.split(key)
     T, X, Z, indices = make_triplets(key_trip, X_pool, Z_pool, n_triplets, anchor_fraction)
 
+    # Step 1b — resolve per-point sigmas to per-triplet if needed
+    sig_arr = jnp.asarray(sig)
+    N = X_pool.shape[0]
+    if sig_arr.ndim == 1 and sig_arr.shape[0] == N:
+        # Pool-level per-point sigmas (N,) -> triplet-level (n_triplets, 3)
+        sig_resolved = sig_arr[indices]
+    elif sig_arr.ndim == 2 and sig_arr.shape[0] == N:
+        # Pool-level per-point diagonal sigmas (N, p) -> (n_triplets, 3, p)
+        sig_resolved = sig_arr[indices]
+    else:
+        sig_resolved = sig
+
     # Step 2 — build log-posterior
-    logprob_fn = make_dirichlet_logposterior(T, Z, sig, alpha, kappa, noise_model)
+    logprob_fn = make_dirichlet_logposterior(T, Z, sig_resolved, alpha, kappa, noise_model)
     init_position = jnp.zeros(p)
 
     # Step 3 — run inference
@@ -128,13 +140,13 @@ def fit_bii(
 
     # WAIC (optional — can OOM with large triplet sets + many samples)
     w_flat = w_samples.reshape(-1, p)
-    waic = compute_waic(w_flat, T, Z, sig, noise_model) if compute_waic_flag else None
+    waic = compute_waic(w_flat, T, Z, sig_resolved, noise_model) if compute_waic_flag else None
 
     # Alignment measures
     from bii.diagnostics import alignment_index as _alignment_index
     entropy_scores = weight_entropy(w_flat)
-    accuracy_scores = triplet_accuracy(w_flat, T, Z, sig, noise_model)
-    alignment_idx = _alignment_index(w_flat, T, Z, sig, noise_model)
+    accuracy_scores = triplet_accuracy(w_flat, T, Z, sig_resolved, noise_model)
+    alignment_idx = _alignment_index(w_flat, T, Z, sig_resolved, noise_model)
 
     elapsed = time.perf_counter() - t0
 

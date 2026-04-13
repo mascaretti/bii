@@ -88,6 +88,30 @@ def _make_sig2_fn(sig, noise_model):
         raise ValueError(f"Unknown noise_model: {noise_model!r}")
 
 
+def _resolve_sig2(sig, noise_model, zi, zj, zk):
+    """Resolve per-triplet noise variances.
+
+    Supports:
+        - scalar or (p,): global noise, dispatched via noise_model.
+        - (n_triplets, 3): per-point isotropic, pre-resolved via indices.
+        - (n_triplets, 3, p): per-point diagonal, pre-resolved via indices.
+
+    Returns:
+        ``(sig2_i, sig2_j, sig2_k)`` — each scalar, (n_triplets,), or (n_triplets, p).
+    """
+    sig = jnp.asarray(sig)
+    if sig.ndim >= 2:
+        # Pre-resolved per-triplet sigmas.
+        # Column order matches Z: 0=anchor(k), 1=dest1(i), 2=dest2(j)
+        sig2_i = sig[:, 1] ** 2
+        sig2_j = sig[:, 2] ** 2
+        sig2_k = sig[:, 0] ** 2
+        return sig2_i, sig2_j, sig2_k
+    else:
+        sig2_fn = _make_sig2_fn(sig, noise_model)
+        return sig2_fn(zi), sig2_fn(zj), sig2_fn(zk)
+
+
 def loglik_w(w, T, Z, sig, noise_model="additive"):
     """Log-likelihood given weights w directly on the simplex.
 
@@ -95,31 +119,55 @@ def loglik_w(w, T, Z, sig, noise_model="additive"):
         w: (p,) simplex weights.
         T: (n,) binary triplet labels.
         Z: (n, 3, p) triplet embeddings.
-        sig: noise std — scalar or (p,).
+        sig: noise std — scalar, (p,), or (n_triplets, 3) pre-resolved.
         noise_model: ``"additive"`` (shared σ) or ``"multiplicative"`` (β·z²).
+            Ignored when sig is (n_triplets, 3).
     """
-    sig2_fn = _make_sig2_fn(sig, noise_model)
     zi, zj, zk = Z[:, 1], Z[:, 2], Z[:, 0]
+    sig = jnp.asarray(sig)
 
-    def dv(zi, zj, zk):
-        return delta_V_one_triplet(zi, zj, zk, w,
-                                   sig2_fn(zi), sig2_fn(zj), sig2_fn(zk))
+    if sig.ndim >= 2:
+        # Pre-resolved per-triplet sigmas — pass sig2 directly, no sig2_fn
+        sig2_i, sig2_j, sig2_k = _resolve_sig2(sig, noise_model, zi, zj, zk)
 
-    delta, V = jax.vmap(dv)(zi, zj, zk)
+        def dv(zi, zj, zk, s2i, s2j, s2k):
+            return delta_V_one_triplet(zi, zj, zk, w, s2i, s2j, s2k)
+
+        delta, V = jax.vmap(dv)(zi, zj, zk, sig2_i, sig2_j, sig2_k)
+    else:
+        sig2_fn = _make_sig2_fn(sig, noise_model)
+
+        def dv(zi, zj, zk):
+            return delta_V_one_triplet(zi, zj, zk, w,
+                                       sig2_fn(zi), sig2_fn(zj), sig2_fn(zk))
+
+        delta, V = jax.vmap(dv)(zi, zj, zk)
+
     logP, log1mP = logP_log1mP_from_deltaV(delta, V)
     return jnp.sum(T * logP + (1.0 - T) * log1mP)
 
 
 def loglik_w_per_triplet(w, T, Z, sig, noise_model="additive"):
     """Per-triplet log-likelihood given weights w on the simplex."""
-    sig2_fn = _make_sig2_fn(sig, noise_model)
     zi, zj, zk = Z[:, 1], Z[:, 2], Z[:, 0]
+    sig = jnp.asarray(sig)
 
-    def dv(zi, zj, zk):
-        return delta_V_one_triplet(zi, zj, zk, w,
-                                   sig2_fn(zi), sig2_fn(zj), sig2_fn(zk))
+    if sig.ndim >= 2:
+        sig2_i, sig2_j, sig2_k = _resolve_sig2(sig, noise_model, zi, zj, zk)
 
-    delta, V = jax.vmap(dv)(zi, zj, zk)
+        def dv(zi, zj, zk, s2i, s2j, s2k):
+            return delta_V_one_triplet(zi, zj, zk, w, s2i, s2j, s2k)
+
+        delta, V = jax.vmap(dv)(zi, zj, zk, sig2_i, sig2_j, sig2_k)
+    else:
+        sig2_fn = _make_sig2_fn(sig, noise_model)
+
+        def dv(zi, zj, zk):
+            return delta_V_one_triplet(zi, zj, zk, w,
+                                       sig2_fn(zi), sig2_fn(zj), sig2_fn(zk))
+
+        delta, V = jax.vmap(dv)(zi, zj, zk)
+
     logP, log1mP = logP_log1mP_from_deltaV(delta, V)
     return T * logP + (1.0 - T) * log1mP
 
