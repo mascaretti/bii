@@ -5,6 +5,7 @@ from jax import numpy as jnp
 
 from bii.inference import delta_V_one_triplet, loglik_w_per_triplet
 
+
 def compute_waic(w_samples_flat, T, Z, sig, noise_model="additive"):
     """Compute WAIC using lax.map to prevent OOM."""
     per_triplet_ll = jax.lax.map(

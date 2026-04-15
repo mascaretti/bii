@@ -89,7 +89,6 @@ def test_delta_V_homoscedastic_recovery():
     aa = jnp.sum(w2 * a * a)
     bb = jnp.sum(w2 * b * b)
     ab = jnp.sum(w2 * a * b)
-    tr = jnp.sum(w2 * sig2 * sig2)
     expected_V = 8.0 * sig2 * (aa + bb - ab) + 12.0 * sig2**2 * jnp.sum(w2)
 
     # No bias correction when σ_i = σ_j
@@ -152,7 +151,6 @@ def test_delta_V_zero_noise():
 @settings(max_examples=200)
 def test_delta_V_V_nonnegative(sig2_i, sig2_j, sig2_k):
     """V(w) must be non-negative for any per-point variances."""
-    p = 3
     zi = jnp.array([1.0, 0.0, -0.5])
     zj = jnp.array([0.0, 1.0, 0.3])
     zk = jnp.array([0.5, 0.5, 0.0])
