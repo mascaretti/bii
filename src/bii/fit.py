@@ -44,7 +44,6 @@ def fit_bii(
     vi_num_samples=2000,
     # Options
     compute_waic_flag=True,
-    init_position=None,
 ):
     """Unified Bayesian inference pipeline for metric weights.
 
@@ -68,10 +67,6 @@ def fit_bii(
         vi_lr: Adam learning rate for VI.
         vi_elbo_samples: MC samples per ELBO estimate.
         vi_num_samples: samples drawn from fitted variational posterior.
-        init_position: NUTS starting point in θ-space (softmax pre-image),
-            shape (p,). Default None → ``jnp.zeros(p)`` (uniform w).
-            Pass mean-centered ``log(w_DII)`` to warm-start NUTS from DII.
-            Ignored for VI.
 
     Returns:
         dict with keys ``w_samples``, ``raw_samples``, ``T``, ``Z``,
@@ -102,13 +97,7 @@ def fit_bii(
 
     # Step 2 — build log-posterior
     logprob_fn = make_dirichlet_logposterior(T, Z, sig_resolved, alpha, kappa, noise_model)
-    if init_position is None:
-        init_position = jnp.zeros(p)
-    else:
-        init_position = jnp.asarray(init_position)
-        if init_position.shape != (p,):
-            raise ValueError(
-                f"init_position shape {init_position.shape} != ({p},)")
+    init_position = jnp.zeros(p)
 
     # Step 3 — run inference
     if inference_method == "nuts":
