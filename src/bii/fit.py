@@ -26,6 +26,8 @@ def fit_bii(
     noise_model="additive",
     n_triplets=15,
     anchor_fraction=0.5,
+    # Triplet construction
+    triplet_sampler=None,
     # Prior hyperparams
     alpha=None,
     kappa=1.0,
@@ -55,6 +57,11 @@ def fit_bii(
         noise_model: ``"additive"`` or ``"multiplicative"``.
         n_triplets: destination pairs per anchor.
         anchor_fraction: fraction of pool used as anchors.
+        triplet_sampler: callable
+            ``(key, X_pool, Z_pool, sig, n_triplets, anchor_fraction) -> (T, X, Z, indices)``.
+            Defaults to :func:`bii.data.make_triplets` (ignores ``sig``). Pass e.g.
+            ``functools.partial(make_triplets_zfar, rank_i=100, rank_j=200)`` to use
+            the Z-far-rank sampler instead.
         alpha: Dirichlet concentration; default ``ones(p)``.
         kappa: power-likelihood correction.
         inference_method: ``"nuts"`` or ``"vi"``.
@@ -81,7 +88,12 @@ def fit_bii(
 
     # Step 1 — form triplets
     key, key_trip = random.split(key)
-    T, X, Z, indices = make_triplets(key_trip, X_pool, Z_pool, n_triplets, anchor_fraction)
+    if triplet_sampler is None:
+        T, X, Z, indices = make_triplets(key_trip, X_pool, Z_pool, n_triplets, anchor_fraction)
+    else:
+        T, X, Z, indices = triplet_sampler(
+            key_trip, X_pool, Z_pool, sig, n_triplets, anchor_fraction
+        )
 
     # Step 1b — resolve per-point sigmas to per-triplet if needed
     sig_arr = jnp.asarray(sig)
