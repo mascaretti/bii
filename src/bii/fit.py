@@ -26,6 +26,8 @@ def fit_bii(
     noise_model="additive",
     n_triplets=15,
     anchor_fraction=0.5,
+    # Triplet construction
+    triplet_sampler=None,
     # Prior hyperparams
     alpha=None,
     kappa=1.0,
@@ -55,6 +57,13 @@ def fit_bii(
         noise_model: ``"additive"`` or ``"multiplicative"``.
         n_triplets: destination pairs per anchor.
         anchor_fraction: fraction of pool used as anchors.
+        triplet_sampler: callable. Default ``bii.data.make_triplets``.
+            Two return protocols are supported:
+              * 4-tuple ``(T, X, Z, indices)`` — unweighted loglik.
+              * 5-tuple ``(T, X, Z, indices, weights)`` — ``weights`` are
+                forwarded to the loglik as per-triplet importance weights.
+            The sampler signature is
+            ``(key, X_pool, Z_pool, sig, n_triplets, anchor_fraction) -> ...``.
         alpha: Dirichlet concentration; default ``ones(p)``.
         kappa: power-likelihood correction.
         inference_method: ``"nuts"`` or ``"vi"``.
@@ -81,7 +90,15 @@ def fit_bii(
 
     # Step 1 — form triplets
     key, key_trip = random.split(key)
-    T, X, Z, indices = make_triplets(key_trip, X_pool, Z_pool, n_triplets, anchor_fraction)
+    triplet_weights = None
+    if triplet_sampler is None:
+        T, X, Z, indices = make_triplets(key_trip, X_pool, Z_pool, n_triplets, anchor_fraction)
+    else:
+        out = triplet_sampler(key_trip, X_pool, Z_pool, sig, n_triplets, anchor_fraction)
+        if len(out) == 5:
+            T, X, Z, indices, triplet_weights = out
+        else:
+            T, X, Z, indices = out
 
     # Step 1b — resolve per-point sigmas to per-triplet if needed
     sig_arr = jnp.asarray(sig)
@@ -96,7 +113,10 @@ def fit_bii(
         sig_resolved = sig
 
     # Step 2 — build log-posterior
-    logprob_fn = make_dirichlet_logposterior(T, Z, sig_resolved, alpha, kappa, noise_model)
+    logprob_fn = make_dirichlet_logposterior(
+        T, Z, sig_resolved, alpha, kappa, noise_model,
+        triplet_weights=triplet_weights,
+    )
     init_position = jnp.zeros(p)
 
     # Step 3 — run inference

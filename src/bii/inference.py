@@ -112,7 +112,7 @@ def _resolve_sig2(sig, noise_model, zi, zj, zk):
         return sig2_fn(zi), sig2_fn(zj), sig2_fn(zk)
 
 
-def loglik_w(w, T, Z, sig, noise_model="additive"):
+def loglik_w(w, T, Z, sig, noise_model="additive", triplet_weights=None):
     """Log-likelihood given weights w directly on the simplex.
 
     Args:
@@ -122,6 +122,10 @@ def loglik_w(w, T, Z, sig, noise_model="additive"):
         sig: noise std — scalar, (p,), or (n_triplets, 3) pre-resolved.
         noise_model: ``"additive"`` (shared σ) or ``"multiplicative"`` (β·z²).
             Ignored when sig is (n_triplets, 3).
+        triplet_weights: optional (n,) per-triplet importance weights. When
+            provided, the loglik becomes ``sum(weights * per_triplet_logP)``
+            instead of the plain sum. Designed for importance-weighted
+            samplers (see :func:`bii.data.make_triplets_rank_weighted`).
     """
     zi, zj, zk = Z[:, 1], Z[:, 2], Z[:, 0]
     sig = jnp.asarray(sig)
@@ -144,7 +148,10 @@ def loglik_w(w, T, Z, sig, noise_model="additive"):
         delta, V = jax.vmap(dv)(zi, zj, zk)
 
     logP, log1mP = logP_log1mP_from_deltaV(delta, V)
-    return jnp.sum(T * logP + (1.0 - T) * log1mP)
+    per_triplet = T * logP + (1.0 - T) * log1mP
+    if triplet_weights is None:
+        return jnp.sum(per_triplet)
+    return jnp.sum(triplet_weights * per_triplet)
 
 
 def loglik_w_per_triplet(w, T, Z, sig, noise_model="additive"):

@@ -9,7 +9,8 @@ from jax import numpy as jnp
 
 from bii.inference import loglik_w
 
-def make_dirichlet_logposterior(T, Z, sig, alpha, kappa=1.0, noise_model="additive"):
+def make_dirichlet_logposterior(T, Z, sig, alpha, kappa=1.0, noise_model="additive",
+                                triplet_weights=None):
     """Return ``logprob_fn(theta) -> scalar`` for a Dirichlet prior.
 
     Args:
@@ -19,10 +20,13 @@ def make_dirichlet_logposterior(T, Z, sig, alpha, kappa=1.0, noise_model="additi
         alpha: (p,) Dirichlet concentration.
         kappa: power-likelihood exponent.
         noise_model: ``"additive"`` or ``"multiplicative"``.
+        triplet_weights: optional (n,) per-triplet importance weights forwarded
+            to :func:`bii.inference.loglik_w`.
     """
 
     def logprob_fn(theta):
         w = jax.nn.softmax(theta)
-        return kappa * loglik_w(w, T, Z, sig, noise_model) + jnp.sum(alpha * jnp.log(w + 1e-12))
+        ll = loglik_w(w, T, Z, sig, noise_model, triplet_weights=triplet_weights)
+        return kappa * ll + jnp.sum(alpha * jnp.log(w + 1e-12))
 
     return logprob_fn
