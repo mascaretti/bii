@@ -158,3 +158,91 @@ def make_triplets_zfar(key, X_pool, Z_pool, sig, n_triplets, anchor_fraction=0.1
     Z = Z_pool[indices]
     T = T_from_X(X)
     return T, X, Z, indices
+
+
+def make_triplets_yfar(key, X_pool, Z_pool, sig, n_triplets, anchor_fraction=0.1,
+                       rank_i=200, rank_j=500, balance_labels=True):
+    """Form triplets with (i, j) at fixed Y-distance ranks from each anchor.
+
+    Counterpart to :func:`make_triplets_zfar` but ranks by Euclidean X-distance
+    (target/Y space) instead of Mahalanobis Z-distance. For each anchor k, sort
+    pool by ``d2_X(l, k) = sum_d (x_{l,d} - x_{k,d})^2`` ascending, then pick
+    ``(i, j)`` at sliding ranks ``(rank_i + t, rank_j + t)``. Labels still come
+    from ``T_from_X`` (X-distance).
+
+    Because the ranking AND labelling spaces coincide, ``T`` would be constant
+    (= 1, since ``rank_i < rank_j`` ⟹ ``d_X(i, k) ≤ d_X(j, k)``). When
+    ``balance_labels`` is True, columns 1 and 2 are independently swapped per
+    triplet with p=0.5, giving a 50/50 label distribution.
+
+    Symmetry note: the swap is a no-op for the per-triplet loglik (swapping
+    ``(i, j)`` flips both ``T`` and ``s = (d_i^2 - d_j^2)/sqrt(V)``, leaving
+    ``log Phi(±s)`` unchanged). NUTS posterior, ESS, R-hat, WAIC and
+    triplet_accuracy are therefore identical with or without ``balance_labels``;
+    the option only affects diagnostics that condition on label balance.
+
+    Args:
+        key: JAX random key (anchor permutation + optional column swap).
+        X_pool: (N, p_x) reference embeddings (ranking AND labels).
+        Z_pool: (N, p_z) noisy/normalised embeddings (loglik only).
+        sig: kept for interface compatibility with ``fit_bii``'s triplet_sampler
+            protocol; unused here (Y-side ranking is plain Euclidean).
+        n_triplets: triplets per anchor (sliding window length).
+        anchor_fraction: fraction of pool used as anchors.
+        rank_i: 1-based starting Y-rank for candidate 1.
+        rank_j: 1-based starting Y-rank for candidate 2.
+        balance_labels: if True, swap columns 1 and 2 per triplet w.p. 0.5.
+
+    Returns:
+        ``(T, X, Z, indices)`` — same shapes / semantics as :func:`make_triplets`.
+
+    Raises:
+        ValueError: if ``rank_i``/``rank_j`` violate ``1 <= rank_i < rank_j`` or
+            ``rank_j + n_triplets > N``.
+    """
+    del sig  # unused; kept for triplet_sampler interface compatibility
+
+    if not (1 <= rank_i < rank_j):
+        raise ValueError(
+            f"need 1 <= rank_i < rank_j; got rank_i={rank_i}, rank_j={rank_j}"
+        )
+    N = X_pool.shape[0]
+    if rank_j + n_triplets > N:
+        raise ValueError(
+            f"rank_j + n_triplets = {rank_j + n_triplets} exceeds N = {N}"
+        )
+
+    n_anchors = max(1, int(N * anchor_fraction))
+
+    key, k_anchors, k_swap = random.split(key, 3)
+    perm = random.permutation(k_anchors, N)
+    anchor_idx = perm[:n_anchors]
+
+    offsets = jnp.arange(n_triplets)
+    i_positions = (rank_i - 1) + offsets
+    j_positions = (rank_j - 1) + offsets
+
+    def one_anchor(k_idx):
+        x_k = X_pool[k_idx]
+        diff = X_pool - x_k[None, :]
+        d2 = jnp.sum(diff * diff, axis=1)
+        d2 = d2.at[k_idx].set(jnp.inf)
+        order = jnp.argsort(d2)
+        i_idx = order[i_positions]
+        j_idx = order[j_positions]
+        k_rep = jnp.full((n_triplets,), k_idx)
+        return jnp.stack([k_rep, i_idx, j_idx], axis=1)
+
+    indices = jax.vmap(one_anchor)(anchor_idx)
+    indices = indices.reshape(-1, 3)
+
+    if balance_labels:
+        swaps = random.bernoulli(k_swap, p=0.5, shape=(indices.shape[0],))
+        col1 = jnp.where(swaps, indices[:, 2], indices[:, 1])
+        col2 = jnp.where(swaps, indices[:, 1], indices[:, 2])
+        indices = jnp.stack([indices[:, 0], col1, col2], axis=1)
+
+    X = X_pool[indices]
+    Z = Z_pool[indices]
+    T = T_from_X(X)
+    return T, X, Z, indices
