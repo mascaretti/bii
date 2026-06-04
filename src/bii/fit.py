@@ -33,6 +33,9 @@ def fit_bii(
     kappa=1.0,
     # Likelihood robustifier
     clip_s=None,
+    # Inclusion-mixture likelihood (probabilistic triplet inclusion that
+    # evolves with w; set to a float in (0, 1) to enable)
+    pi_inclusion=None,
     # Inference method
     inference_method="nuts",
     # NUTS params
@@ -77,6 +80,14 @@ def fit_bii(
             for saturating triplets; ``clip_s=2.5`` is a sensible default
             ("any confidence stronger than ~99.4% is treated as 99.4%").
             Default ``None`` = no clipping.
+        pi_inclusion: optional float in (0, 1). Enables an inclusion-mixture
+            likelihood: each triplet is treated as "informative" with prob
+            ``pi`` and "noise" (label uniform) with prob ``1 - pi``. The
+            posterior inclusion probability ``P(m_t = 1 | T_t, w)`` is
+            reported in the result dict as ``inclusion_probs`` (mean over
+            NUTS draws). Adaptive analogue of the static ``[eps, 1-eps]``
+            filter from :func:`bii.data.make_triplets_random_sparse`.
+            Default ``None`` = plain probit (no mixture).
         inference_method: ``"nuts"`` or ``"vi"``.
         num_samples: posterior draws per chain (NUTS).
         num_warmup: NUTS warmup steps.
@@ -127,6 +138,7 @@ def fit_bii(
     logprob_fn = make_dirichlet_logposterior(
         T, Z, sig_resolved, alpha, kappa, noise_model,
         triplet_weights=triplet_weights, clip_s=clip_s,
+        pi_inclusion=pi_inclusion,
     )
     init_position = jnp.zeros(p)
 
@@ -173,6 +185,19 @@ def fit_bii(
     w_flat = w_samples.reshape(-1, p)
     waic = compute_waic(w_flat, T, Z, sig_resolved, noise_model) if compute_waic_flag else None
 
+    # Posterior-mean inclusion probability per triplet (only meaningful when
+    # the mixture likelihood is in use; otherwise we skip the computation).
+    incl_probs = None
+    if pi_inclusion is not None:
+        from bii.inference import inclusion_probs as _inclusion_probs
+        # Average over a (capped) subset of draws to keep the cost bounded.
+        sub = w_flat[:: max(1, w_flat.shape[0] // 512)]
+        per_draw = jax.vmap(
+            lambda w_: _inclusion_probs(w_, T, Z, sig_resolved, pi_inclusion,
+                                        noise_model, clip_s)
+        )(sub)
+        incl_probs = jnp.mean(per_draw, axis=0)
+
     # Alignment measures
     from bii.diagnostics import alignment_index as _alignment_index
     entropy_scores = weight_entropy(w_flat)
@@ -188,6 +213,8 @@ def fit_bii(
         "Z": Z,
         "triplet_indices": indices,
         "triplet_weights": triplet_weights,
+        "inclusion_probs": incl_probs,
+        "pi_inclusion": pi_inclusion,
         "kappa": kappa,
         "waic": waic,
         "alignment": {
