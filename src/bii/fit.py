@@ -31,6 +31,8 @@ def fit_bii(
     # Prior hyperparams
     alpha=None,
     kappa=1.0,
+    # Likelihood robustifier
+    clip_s=None,
     # Inference method
     inference_method="nuts",
     # NUTS params
@@ -69,6 +71,12 @@ def fit_bii(
             importance-weighted rank-pair sampler.
         alpha: Dirichlet concentration; default ``ones(p)``.
         kappa: power-likelihood correction.
+        clip_s: optional float. Clips the per-triplet probit statistic
+            ``s = delta / sqrt(V)`` to ``[-clip_s, clip_s]`` inside the
+            log-likelihood. Bounded-influence (censored-probit) robustifier
+            for saturating triplets; ``clip_s=2.5`` is a sensible default
+            ("any confidence stronger than ~99.4% is treated as 99.4%").
+            Default ``None`` = no clipping.
         inference_method: ``"nuts"`` or ``"vi"``.
         num_samples: posterior draws per chain (NUTS).
         num_warmup: NUTS warmup steps.
@@ -118,7 +126,7 @@ def fit_bii(
     # Step 2 — build log-posterior
     logprob_fn = make_dirichlet_logposterior(
         T, Z, sig_resolved, alpha, kappa, noise_model,
-        triplet_weights=triplet_weights,
+        triplet_weights=triplet_weights, clip_s=clip_s,
     )
     init_position = jnp.zeros(p)
 

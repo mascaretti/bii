@@ -55,10 +55,19 @@ def delta_V_one_triplet(zi, zj, zk, w, sig2_i, sig2_j, sig2_k):  # noqa: N802
     return mu, V
 
 
-@jax.jit
-def logP_log1mP_from_deltaV(delta, V):  # noqa: N802
-    """Log probabilities from delta and V via normal CDF."""
+def logP_log1mP_from_deltaV(delta, V, clip_s=None):  # noqa: N802
+    """Log probabilities from delta and V via normal CDF.
+
+    When ``clip_s`` is given, ``s = delta / sqrt(V)`` is truncated to
+    ``[-clip_s, clip_s]`` before the normal CDF. The clipped saturating
+    regime contributes a bounded loss and zero gradient in ``w``, which
+    defuses the magnesium-collapse failure mode without changing the
+    sampler. Equivalent to a censored-probit likelihood with the censoring
+    threshold at ``clip_s``.
+    """
     s = delta / jnp.sqrt(V + 1e-12)
+    if clip_s is not None:
+        s = jnp.clip(s, -clip_s, clip_s)
     logP = log_ndtr(-s)  # noqa: N806
     log1mP = log_ndtr(s)  # noqa: N806
     return logP, log1mP
@@ -112,7 +121,7 @@ def _resolve_sig2(sig, noise_model, zi, zj, zk):
         return sig2_fn(zi), sig2_fn(zj), sig2_fn(zk)
 
 
-def loglik_w(w, T, Z, sig, noise_model="additive", triplet_weights=None):
+def loglik_w(w, T, Z, sig, noise_model="additive", triplet_weights=None, clip_s=None):
     """Log-likelihood given weights w directly on the simplex.
 
     Args:
@@ -126,6 +135,11 @@ def loglik_w(w, T, Z, sig, noise_model="additive", triplet_weights=None):
             provided, the loglik becomes ``sum(weights * per_triplet_logP)``
             instead of the plain sum. Designed for importance-weighted
             samplers (see :func:`bii.data.make_triplets_rank_weighted`).
+        clip_s: optional float. When set, the per-triplet probit statistic
+            ``s = delta / sqrt(V)`` is clipped to ``[-clip_s, clip_s]``
+            before the normal CDF. Bounds the saturating contribution of
+            any single triplet and zeroes the gradient in ``w`` outside
+            the trust region — a censored-probit robustifier.
     """
     zi, zj, zk = Z[:, 1], Z[:, 2], Z[:, 0]
     sig = jnp.asarray(sig)
@@ -147,7 +161,7 @@ def loglik_w(w, T, Z, sig, noise_model="additive", triplet_weights=None):
 
         delta, V = jax.vmap(dv)(zi, zj, zk)
 
-    logP, log1mP = logP_log1mP_from_deltaV(delta, V)
+    logP, log1mP = logP_log1mP_from_deltaV(delta, V, clip_s=clip_s)
     per_triplet = T * logP + (1.0 - T) * log1mP
     if triplet_weights is None:
         return jnp.sum(per_triplet)
