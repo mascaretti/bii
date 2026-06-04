@@ -3,6 +3,7 @@
 from bii.data import (
     T_from_X,
     make_triplets,
+    make_triplets_random_sparse,
     make_triplets_rank_weighted,
     make_triplets_yfar,
     make_triplets_zfar,
@@ -24,6 +25,7 @@ __all__ = [
     "fit_bii",
     "T_from_X",
     "make_triplets",
+    "make_triplets_random_sparse",
     "make_triplets_rank_weighted",
     "make_triplets_yfar",
     "make_triplets_zfar",

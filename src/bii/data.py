@@ -350,6 +350,97 @@ def make_triplets_rank_weighted(
     return T, X, Z, indices, weights
 
 
+def make_triplets_random_sparse(
+    key, X_pool, Z_pool, sig, n_triplets, anchor_fraction=0.1, *,
+    eps=0.025, reference_w=None, oversample=10,
+):
+    """Random triplets, sparsified by removing saturating-`|s|` candidates.
+
+    Draws ``n_triplets * oversample`` random pairs per anchor via
+    :func:`make_triplets`, computes the per-triplet probit statistic
+    ``s = delta / sqrt(V)`` under ``reference_w``, then keeps only triplets
+    with ``|s| < z_{1-eps}`` (equivalently ``P in [eps, 1 - eps]``).
+
+    Rationale: under heavy-tailed features on NHANES-like data, ~67% of
+    random pairs land in the saturating regime (`|s| > 2` under uniform `w`),
+    where the loglik is dominated by extreme contributions and the only
+    escape is to zero the heavy-tail feature's weight (the
+    "magnesium-collapse" failure mode). Filtering on a reference weight
+    removes those triplets explicitly instead of capping them via
+    ``clip_s``. Survivors live inside the calibrated probit regime
+    regardless of NUTS exploration, *as long as `w` doesn't move too far
+    from ``reference_w``*.
+
+    Args:
+        key: JAX random key.
+        X_pool: (N, p_x) reference embeddings (labels via X-distance).
+        Z_pool: (N, p_z) noisy/normalised embeddings (loglik).
+        sig: per-feature noise std — scalar or (p_z,).
+        n_triplets: target triplets per anchor (after rejection).
+            With ``oversample=10`` and a survival rate of ~33% under uniform
+            on NHANES-like data, the kept count comes out near
+            ``n_triplets * n_anchors * 3.3 / 10``. Set ``oversample`` higher
+            if you want to guarantee at least ``n_triplets`` survivors.
+        anchor_fraction: fraction of pool used as anchors.
+        eps: tail mass to exclude on each side. ``eps=0.025`` excludes the
+            top 5% of triplets by ``|s|`` (corresponding to ``P < 0.025``
+            or ``P > 0.975``).
+        reference_w: (p_z,) weight vector used to evaluate ``s``. Defaults
+            to uniform ``1/p``. Use the previous fit's posterior mean for
+            an adaptive filter, or a fixed reference like DII weights.
+        oversample: multiplier on the pre-rejection triplet count. Tune to
+            ensure enough survivors at the chosen ``eps``.
+
+    Returns:
+        ``(T, X, Z, indices)`` — 4-tuple. Variable size depending on how
+        many candidates survived the rejection; the count is printed.
+    """
+    # Local import to avoid a hard dependency from data.py to inference.py
+    # at module load time.
+    from bii.inference import delta_V_one_triplet
+    from scipy.stats import norm
+
+    p = Z_pool.shape[1]
+    if reference_w is None:
+        reference_w = jnp.full(p, 1.0 / p, dtype=jnp.float32)
+    else:
+        reference_w = jnp.asarray(reference_w, dtype=jnp.float32)
+
+    threshold = float(norm.ppf(1.0 - eps))
+
+    # Oversample candidate triplets.
+    T_c, X_c, Z_c, idx_c = make_triplets(
+        key, X_pool, Z_pool, n_triplets * oversample, anchor_fraction,
+    )
+
+    # Per-triplet |s| under reference_w
+    sig2 = jnp.asarray(sig).astype(Z_c.dtype) ** 2
+    if sig2.ndim == 0:
+        sig2 = jnp.full(p, sig2, dtype=Z_c.dtype)
+    zi = Z_c[:, 1]; zj = Z_c[:, 2]; zk = Z_c[:, 0]
+
+    def one(zi_, zj_, zk_):
+        return delta_V_one_triplet(zi_, zj_, zk_, reference_w, sig2, sig2, sig2)
+
+    delta, V = jax.vmap(one)(zi, zj, zk)
+    s = delta / jnp.sqrt(V + 1e-12)
+    keep = jnp.abs(s) < threshold
+
+    # Variable-size output — JAX boolean indexing returns dynamic shape.
+    T_out = T_c[keep]
+    X_out = X_c[keep]
+    Z_out = Z_c[keep]
+    idx_out = idx_c[keep]
+
+    n_kept = int(keep.sum())
+    n_cand = int(keep.size)
+    print(f"  random_sparse: kept {n_kept}/{n_cand} triplets "
+          f"({100 * n_kept / n_cand:.1f}%) at eps={eps}, |s|<{threshold:.2f}",
+          flush=True)
+
+    return T_out, X_out, Z_out, idx_out
+
+
 def target_yfar_bump(mu_a=200.0, mu_b=500.0, sigma=100.0):
     """Gaussian bump in rank-pair space, suitable for ``target_logweight_fn``.
 
