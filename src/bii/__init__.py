@@ -1,6 +1,12 @@
 """Bayesian Information Imbalance — metric weight inference from triplets."""
 
-from bii.data import T_from_X, make_triplets, make_triplets_rank_weighted
+from bii.data import (
+    T_from_X,
+    make_triplets,
+    make_triplets_rank_weighted,
+    make_triplets_yfar,
+    make_triplets_zfar,
+)
 from bii.diagnostics import (
     alignment_index,
     compute_ess,
@@ -18,6 +24,8 @@ __all__ = [
     "T_from_X",
     "make_triplets",
     "make_triplets_rank_weighted",
+    "make_triplets_yfar",
+    "make_triplets_zfar",
     "make_dirichlet_logposterior",
     "run_nuts",
     "run_vi",

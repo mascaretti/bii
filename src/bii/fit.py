@@ -57,13 +57,16 @@ def fit_bii(
         noise_model: ``"additive"`` or ``"multiplicative"``.
         n_triplets: destination pairs per anchor.
         anchor_fraction: fraction of pool used as anchors.
-        triplet_sampler: callable. Default ``bii.data.make_triplets``.
+        triplet_sampler: callable, default ``bii.data.make_triplets`` (ignores
+            ``sig``). Signature
+            ``(key, X_pool, Z_pool, sig, n_triplets, anchor_fraction) -> ...``.
             Two return protocols are supported:
               * 4-tuple ``(T, X, Z, indices)`` — unweighted loglik.
               * 5-tuple ``(T, X, Z, indices, weights)`` — ``weights`` are
                 forwarded to the loglik as per-triplet importance weights.
-            The sampler signature is
-            ``(key, X_pool, Z_pool, sig, n_triplets, anchor_fraction) -> ...``.
+            Pass e.g. ``functools.partial(make_triplets_zfar, rank_i=10, rank_j=25)``
+            for the Z-far sampler, or ``make_triplets_rank_weighted`` for the
+            importance-weighted rank-pair sampler.
         alpha: Dirichlet concentration; default ``ones(p)``.
         kappa: power-likelihood correction.
         inference_method: ``"nuts"`` or ``"vi"``.
