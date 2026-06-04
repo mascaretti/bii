@@ -6,6 +6,8 @@ from bii.data import (
     make_triplets_random_sparse,
     make_triplets_rank_weighted,
     make_triplets_yfar,
+    make_triplets_z_informative,
+    make_triplets_z_softmax,
     make_triplets_zfar,
     target_yfar_bump,
 )
@@ -28,6 +30,8 @@ __all__ = [
     "make_triplets_random_sparse",
     "make_triplets_rank_weighted",
     "make_triplets_yfar",
+    "make_triplets_z_informative",
+    "make_triplets_z_softmax",
     "make_triplets_zfar",
     "target_yfar_bump",
     "make_dirichlet_logposterior",

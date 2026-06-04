@@ -456,3 +456,170 @@ def target_yfar_bump(mu_a=200.0, mu_b=500.0, sigma=100.0):
         return -((r_a - mu_a) ** 2 + (r_b - mu_b) ** 2) * inv_two_sigma2
 
     return fn
+
+
+def _mahalanobis_d2(Z_pool, k_idx, sig2):
+    """Per-anchor Mahalanobis squared Z-distance to all other pool points.
+
+    ``sig2`` may be scalar or (p,).  Returns (N,) with ``d2[k_idx] = inf``
+    so self-pairs are excluded by downstream argmax/argmin.
+    """
+    diff = Z_pool - Z_pool[k_idx][None, :]
+    d2 = jnp.sum((diff * diff) / sig2[None, :], axis=1)
+    return d2.at[k_idx].set(jnp.inf)
+
+
+def make_triplets_z_softmax(
+    key, X_pool, Z_pool, sig, n_triplets, anchor_fraction=0.1, *,
+    lambda_close=1.0, lambda_far=4.0,
+):
+    """DII-kernel-shaped Z sampler: pair (i, j) ~ softmax_l(-d_Z(l, k) / lambda).
+
+    For each anchor k:
+      i ~ Categorical(softmax(-d2_Z(., k) / lambda_close))
+      j ~ Categorical(softmax(-d2_Z(., k) / lambda_far))
+    independently. Labels follow from :func:`T_from_X` (X-distance ordering).
+
+    The two lambdas implement DII's "softmax over rank-distance" structure: i
+    is drawn from a tight kernel (close neighbours), j from a broader kernel
+    (the kth NN, in DII parlance, integrates the rank profile out to ~lambda).
+    Setting ``lambda_close = lambda_far`` recovers a single-scale draw.
+
+    Args:
+        key, X_pool, Z_pool, sig, n_triplets, anchor_fraction: as in
+            :func:`make_triplets_zfar`.
+        lambda_close, lambda_far: smoothing scales (squared-distance units).
+            Bigger lambda ⟶ flatter kernel, draws from a wider Z-rank window.
+            Defaults are deliberately *unit* values: choose them to match
+            the data scale (e.g. set lambda_close to the empirical 10th-NN
+            squared distance and lambda_far to ~4x that, mirroring the
+            (10, 25) Z-far window).
+
+    Returns:
+        ``(T, X, Z, indices)`` — 4-tuple, same conventions as
+        :func:`make_triplets_zfar`.
+
+    Raises:
+        ValueError: if ``lambda_close`` or ``lambda_far`` are non-positive.
+    """
+    if lambda_close <= 0 or lambda_far <= 0:
+        raise ValueError(f"lambdas must be positive; got close={lambda_close}, far={lambda_far}")
+
+    sig2 = jnp.asarray(sig).astype(Z_pool.dtype) ** 2
+    if sig2.ndim == 0:
+        sig2 = jnp.full(Z_pool.shape[1], sig2, dtype=Z_pool.dtype)
+    N = Z_pool.shape[0]
+    n_anchors = max(1, int(N * anchor_fraction))
+    total = n_anchors * n_triplets
+
+    key, k_anchors, k_i, k_j = random.split(key, 4)
+    perm = random.permutation(k_anchors, N)
+    anchor_idx = perm[:n_anchors]
+
+    keys_i_per_anchor = random.split(k_i, n_anchors)
+    keys_j_per_anchor = random.split(k_j, n_anchors)
+
+    def one_anchor(k_idx, ki, kj):
+        d2 = _mahalanobis_d2(Z_pool, k_idx, sig2)
+        log_q_close = -d2 / lambda_close   # unnormalised; categorical handles softmax
+        log_q_far = -d2 / lambda_far
+        i_idx = random.categorical(ki, log_q_close, shape=(n_triplets,))
+        j_idx = random.categorical(kj, log_q_far,   shape=(n_triplets,))
+        k_rep = jnp.full((n_triplets,), k_idx)
+        return jnp.stack([k_rep, i_idx, j_idx], axis=1)
+
+    indices = jax.vmap(one_anchor)(anchor_idx, keys_i_per_anchor, keys_j_per_anchor)
+    indices = indices.reshape(-1, 3)
+
+    X = X_pool[indices]
+    Z = Z_pool[indices]
+    T = T_from_X(X)
+    return T, X, Z, indices
+
+
+def make_triplets_z_informative(
+    key, X_pool, Z_pool, sig, n_triplets, anchor_fraction=0.1, *,
+    k_window=200, n_oversample=10,
+):
+    """Sample Z-close candidates, keep the most-informative by Var(gamma).
+
+    For each anchor k:
+      1. Take the top ``k_window`` Z-nearest neighbours (Mahalanobis with sig).
+      2. Draw ``n_triplets * n_oversample`` candidate pairs uniformly from
+         this window.
+      3. Score each pair by ``Var_d(gamma_d / sig_d^2)`` where
+         ``gamma_d = (z_{i,d} - z_{k,d})^2 - (z_{j,d} - z_{k,d})^2``.
+         High score = one feature dominates the pair difference, which is
+         exactly where ``|s|(w)`` swings widely with ``w`` — the
+         identifying-triplet regime.
+      4. Keep the top ``n_triplets`` by score.
+
+    Motivation: the flat-``|s|(w)`` failure mode on Z-far comes from pairs
+    where gamma is uniform across features. Down-selecting on
+    ``Var_d(gamma / sig^2)`` keeps only the pairs where the model has
+    something to say. Sigma-normalisation prevents heavy-tail features from
+    artificially dominating the score (since otherwise their large gamma
+    would always win).
+
+    Args:
+        key, X_pool, Z_pool, sig, n_triplets, anchor_fraction: as in other
+            samplers.
+        k_window: how many Z-nearest neighbours to consider per anchor.
+        n_oversample: candidate multiplier; total candidates per anchor =
+            ``n_triplets * n_oversample``.
+
+    Returns:
+        ``(T, X, Z, indices)`` — 4-tuple.
+
+    Raises:
+        ValueError: ``k_window >= N`` or ``n_triplets * n_oversample`` is
+            larger than the number of valid Z-close pairs.
+    """
+    sig2 = jnp.asarray(sig).astype(Z_pool.dtype) ** 2
+    if sig2.ndim == 0:
+        sig2 = jnp.full(Z_pool.shape[1], sig2, dtype=Z_pool.dtype)
+    N = Z_pool.shape[0]
+    if k_window >= N:
+        raise ValueError(f"k_window={k_window} must be < N={N}")
+
+    n_anchors = max(1, int(N * anchor_fraction))
+    n_cand = n_triplets * n_oversample
+
+    key, k_anchors, k_pair = random.split(key, 3)
+    perm = random.permutation(k_anchors, N)
+    anchor_idx = perm[:n_anchors]
+
+    pair_keys = random.split(k_pair, n_anchors)
+
+    def one_anchor(k_idx, kp):
+        # 1. k_window Z-nearest neighbours
+        d2 = _mahalanobis_d2(Z_pool, k_idx, sig2)
+        order = jnp.argsort(d2)
+        nn = order[:k_window]                                  # (k_window,)
+        # 2. n_cand pairs sampled uniformly from the window
+        ki, kj = random.split(kp, 2)
+        i_pos = random.randint(ki, (n_cand,), 0, k_window)
+        j_pos = random.randint(kj, (n_cand,), 0, k_window)
+        i_idx = nn[i_pos]                                      # (n_cand,)
+        j_idx = nn[j_pos]
+        # 3. gamma_d / sig_d^2 and per-pair Var_d (informativeness score)
+        z_k = Z_pool[k_idx]
+        a = Z_pool[i_idx] - z_k[None, :]                       # (n_cand, p)
+        b = Z_pool[j_idx] - z_k[None, :]
+        gamma = (a * a - b * b) / sig2[None, :]                # (n_cand, p)
+        score = jnp.var(gamma, axis=1)                         # (n_cand,)
+        # Penalise i == j by setting their score to -inf
+        score = jnp.where(i_idx == j_idx, -jnp.inf, score)
+        # 4. top n_triplets by score
+        top = jnp.argsort(-score)[:n_triplets]
+        i_keep = i_idx[top]; j_keep = j_idx[top]
+        k_rep = jnp.full((n_triplets,), k_idx)
+        return jnp.stack([k_rep, i_keep, j_keep], axis=1)
+
+    indices = jax.vmap(one_anchor)(anchor_idx, pair_keys)
+    indices = indices.reshape(-1, 3)
+
+    X = X_pool[indices]
+    Z = Z_pool[indices]
+    T = T_from_X(X)
+    return T, X, Z, indices
