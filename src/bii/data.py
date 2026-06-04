@@ -250,82 +250,79 @@ def make_triplets_yfar(key, X_pool, Z_pool, sig, n_triplets, anchor_fraction=0.1
 
 def make_triplets_rank_weighted(
     key, X_pool, Z_pool, sig, n_triplets, anchor_fraction=0.1, *,
-    p_close=0.05, k_max=200, target_logweight_fn=None,
+    k_max=None, target_logweight_fn=None,
 ):
-    """Form triplets at adaptive Y-rank pairs with per-triplet importance weights.
+    """Form triplets at Y-rank pairs drawn uniformly, with importance weights.
 
-    Designed to approximate DII's rank-integrated objective. For each anchor k,
-    independently draw ``r_a, r_b ~ TruncGeometric(p_close)`` on ``[1, k_max]``;
-    pick the points at those Y-ranks (sorted by Euclidean X-distance from k).
-    Labels follow from ``T_from_X``: ``T = 1`` iff ``r_a < r_b`` — naturally
-    balanced because the two ranks are drawn from the same distribution.
+    Designed to approximate DII's rank-integrated objective via the
+    decoupling ``q (broad sampling) + p_target (targeted focus)``. For each
+    anchor k:
 
-    The Geometric prior concentrates draws on small ranks (high information,
-    low outlier risk), mimicking the falloff of DII's softmax-distance kernel
-    ``exp(-d_Z(j, k)/lambda)``. Returning a fifth ``weights`` vector lets the
-    loglik be reweighted to match a target rank-pair distribution via
-    importance sampling: ``alpha_t = p_target(r_a, r_b) / q_sampler(r_a, r_b)``.
+      1. Sort pool by Euclidean X-distance from k → Y-rank order.
+      2. Independently draw ``r_a, r_b ~ Uniform([1, k_max])``.
+      3. Pick the points at those Y-ranks.
+      4. Compute importance weight ``alpha_t = p_target(r_a, r_b)`` (up to a
+         self-normalising constant, since ``q`` is uniform so its density
+         cancels).
+
+    Labels come out balanced by symmetry: ``r_a`` and ``r_b`` are drawn from
+    the same distribution, so ``T = 1{r_a < r_b}`` is 50/50 in expectation.
+
+    Why uniform ``q``: empirically the informative pairs span a wide Y-rank
+    range (see ``first_triplet_y_ranks.npy``: Z-rank-(10, 25) candidates have
+    Y-ranks distributed nearly uniformly across ``[1, N]``). A narrow
+    Geometric ``q`` truncates the support and biases the importance
+    estimator. Uniform ``q`` over the full pool keeps support everywhere,
+    letting any ``p_target`` reweight without producing zeros to divide.
 
     Args:
         key: JAX random key (anchor permutation + per-triplet rank draws).
         X_pool: (N, p_x) reference embeddings (Y-rank ordering AND labels).
-        Z_pool: (N, p_z) noisy/normalised embeddings (used by the loglik only).
+        Z_pool: (N, p_z) noisy/normalised embeddings (loglik only).
         sig: kept for ``fit_bii``'s ``triplet_sampler`` interface; unused.
         n_triplets: triplets per anchor.
         anchor_fraction: fraction of pool used as anchors.
-        p_close: success probability of the truncated geometric on ranks
-            ``[1, k_max]``. Larger ``p_close`` ⟶ more weight on small ranks.
-        k_max: rank truncation; must satisfy ``k_max < N``.
-        target_logweight_fn: optional callable ``(r_a, r_b) -> log alpha`` (up
-            to a constant). When provided, returns importance weights
-            ``alpha_t = p_target(r_a, r_b) / q_sampler(r_a, r_b)``, self-
-            normalised so ``sum(alpha) == n_anchors * n_triplets`` (the value
-            it would have if all weights were 1). When None, all weights are 1.
+        k_max: rank truncation; defaults to ``N - 1`` (full pool minus the
+            anchor). Set lower if you want to cap the range explicitly.
+        target_logweight_fn: optional callable ``(r_a, r_b) -> log p_target``
+            (up to a constant). When None, all weights are 1 (uniform
+            sampling, unfocused). See :func:`target_yfar_bump` for a ready
+            Gaussian-bump target.
 
     Returns:
-        ``(T, X, Z, indices, weights)`` — 5-tuple. ``weights`` has shape
-        ``(n_anchors * n_triplets,)`` and is forwarded to ``loglik_w`` via
-        ``fit_bii``'s 5-tuple sampler protocol.
+        ``(T, X, Z, indices, weights)`` — 5-tuple. ``weights`` is self-
+        normalised so ``sum(weights) == n_anchors * n_triplets``.
 
     Raises:
-        ValueError: ``k_max >= N``.
+        ValueError: ``k_max`` outside ``[1, N - 1]``.
     """
     del sig  # unused; kept for triplet_sampler interface compatibility
 
     N = X_pool.shape[0]
-    if k_max >= N:
-        raise ValueError(f"k_max={k_max} must be < N={N}")
+    if k_max is None:
+        k_max = N - 1
+    if not (1 <= k_max <= N - 1):
+        raise ValueError(f"k_max={k_max} must satisfy 1 <= k_max <= N-1 (N={N})")
 
     n_anchors = max(1, int(N * anchor_fraction))
     total = n_anchors * n_triplets
 
-    # Unnormalised log-geometric pmf on [1, k_max]; categorical handles normalisation.
-    ranks = jnp.arange(1, k_max + 1)
-    log_q = jnp.log(p_close) + (ranks - 1) * jnp.log1p(-p_close)
-
-    key, k_anchors, k_a, k_b = random.split(key, 4)
+    key, k_anchors, k_ra, k_rb = random.split(key, 4)
     perm = random.permutation(k_anchors, N)
     anchor_idx = perm[:n_anchors]
 
-    keys_a = random.split(k_a, total)
-    keys_b = random.split(k_b, total)
-
-    def sample_pair(k_a_, k_b_):
-        ia = random.categorical(k_a_, log_q)
-        ib = random.categorical(k_b_, log_q)
-        return ranks[ia], ranks[ib]
-
-    r_a_all, r_b_all = jax.vmap(sample_pair)(keys_a, keys_b)
+    # Uniform draws over Y-rank space [1, k_max].
+    r_a_all = random.randint(k_ra, (total,), minval=1, maxval=k_max + 1)
+    r_b_all = random.randint(k_rb, (total,), minval=1, maxval=k_max + 1)
 
     if target_logweight_fn is None:
         weights = jnp.ones(total)
     else:
         from jax.scipy.special import logsumexp
-        log_q_norm = log_q - logsumexp(log_q)
-        log_q_pair = log_q_norm[r_a_all - 1] + log_q_norm[r_b_all - 1]
+        # q is uniform on [1, k_max]^2 so log_q is a constant; it drops out
+        # of the self-normalisation. log_w == log_p up to that constant.
         log_p = jax.vmap(target_logweight_fn)(r_a_all, r_b_all)
-        log_w = log_p - log_q_pair
-        log_w = log_w - logsumexp(log_w) + jnp.log(total)
+        log_w = log_p - logsumexp(log_p) + jnp.log(total)
         weights = jnp.exp(log_w)
 
     r_a_anchor = r_a_all.reshape(n_anchors, n_triplets)
@@ -351,3 +348,20 @@ def make_triplets_rank_weighted(
     Z = Z_pool[indices]
     T = T_from_X(X)
     return T, X, Z, indices, weights
+
+
+def target_yfar_bump(mu_a=200.0, mu_b=500.0, sigma=100.0):
+    """Gaussian bump in rank-pair space, suitable for ``target_logweight_fn``.
+
+    Returns a callable ``(r_a, r_b) -> log p_target`` proportional to
+    ``exp(- ((r_a - mu_a)**2 + (r_b - mu_b)**2) / (2 * sigma**2))``.
+
+    Default centre ``(200, 500)`` matches the Y-far experiment's ranks; a
+    wider ``sigma`` makes the target broader / closer to uniform.
+    """
+    inv_two_sigma2 = 1.0 / (2.0 * sigma ** 2)
+
+    def fn(r_a, r_b):
+        return -((r_a - mu_a) ** 2 + (r_b - mu_b) ** 2) * inv_two_sigma2
+
+    return fn

@@ -179,6 +179,7 @@ def fit_bii(
         "T": T,
         "Z": Z,
         "triplet_indices": indices,
+        "triplet_weights": triplet_weights,
         "kappa": kappa,
         "waic": waic,
         "alignment": {

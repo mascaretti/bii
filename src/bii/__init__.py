@@ -6,6 +6,7 @@ from bii.data import (
     make_triplets_rank_weighted,
     make_triplets_yfar,
     make_triplets_zfar,
+    target_yfar_bump,
 )
 from bii.diagnostics import (
     alignment_index,
@@ -26,6 +27,7 @@ __all__ = [
     "make_triplets_rank_weighted",
     "make_triplets_yfar",
     "make_triplets_zfar",
+    "target_yfar_bump",
     "make_dirichlet_logposterior",
     "run_nuts",
     "run_vi",
