@@ -36,6 +36,8 @@ def fit_bii(
     # Inclusion-mixture likelihood (probabilistic triplet inclusion that
     # evolves with w; set to a float in (0, 1) to enable)
     pi_inclusion=None,
+    # Optional Beta(a, b) prior on pi (overrides pi_inclusion when given)
+    pi_prior=None,
     # Inference method
     inference_method="nuts",
     # NUTS params
@@ -88,6 +90,13 @@ def fit_bii(
             NUTS draws). Adaptive analogue of the static ``[eps, 1-eps]``
             filter from :func:`bii.data.make_triplets_random_sparse`.
             Default ``None`` = plain probit (no mixture).
+        pi_prior: optional ``(a, b)`` Beta hyperparameters that put a
+            ``Beta(a, b)`` prior on ``pi`` and sample it jointly with
+            ``theta``. When given, ``pi_inclusion`` is ignored and the
+            result dict includes a new field ``pi_samples`` of shape
+            ``(num_samples, num_chains)`` plus a posterior-mean
+            ``pi_mean``. Use ``Beta(2, 2)`` for a weakly informative
+            default that keeps mass away from 0 and 1.
         inference_method: ``"nuts"`` or ``"vi"``.
         num_samples: posterior draws per chain (NUTS).
         num_warmup: NUTS warmup steps.
@@ -134,13 +143,15 @@ def fit_bii(
     else:
         sig_resolved = sig
 
-    # Step 2 — build log-posterior
+    # Step 2 — build log-posterior. With pi_prior, the position vector grows
+    # by one entry (logit_pi at the end), and pi_inclusion is ignored.
     logprob_fn = make_dirichlet_logposterior(
         T, Z, sig_resolved, alpha, kappa, noise_model,
         triplet_weights=triplet_weights, clip_s=clip_s,
-        pi_inclusion=pi_inclusion,
+        pi_inclusion=pi_inclusion, pi_prior=pi_prior,
     )
-    init_position = jnp.zeros(p)
+    position_dim = p + 1 if pi_prior is not None else p
+    init_position = jnp.zeros(position_dim)
 
     # Step 3 — run inference
     if inference_method == "nuts":
@@ -150,7 +161,14 @@ def fit_bii(
             num_samples, num_warmup, num_chains, step_size, target_acceptance_rate,
         )
 
-        w_samples = jax.vmap(jax.vmap(jax.nn.softmax))(raw_samples)
+        if pi_prior is not None:
+            theta_samples = raw_samples[..., :p]
+            logit_pi_samples = raw_samples[..., p]
+            pi_samples = jax.nn.sigmoid(logit_pi_samples)
+        else:
+            theta_samples = raw_samples
+            pi_samples = None
+        w_samples = jax.vmap(jax.vmap(jax.nn.softmax))(theta_samples)
 
         diagnostics = {
             "acceptance_rate": jnp.mean(acceptance_rates),
@@ -161,6 +179,10 @@ def fit_bii(
             diagnostics["ess"] = compute_ess(w_samples)
 
     elif inference_method == "vi":
+        if pi_prior is not None:
+            raise NotImplementedError(
+                "VI with a Beta prior on pi is not yet supported; use NUTS."
+            )
         key, key_vi, key_sample = random.split(key, 3)
 
         mu, log_sigma, elbo_history = run_vi(
@@ -171,6 +193,7 @@ def fit_bii(
 
         raw_samples = theta_samples[:, None, :]
         w_samples = w_flat_vi[:, None, :]
+        pi_samples = None
 
         diagnostics = {
             "elbo_history": elbo_history,
@@ -187,13 +210,17 @@ def fit_bii(
 
     # Posterior-mean inclusion probability per triplet (only meaningful when
     # the mixture likelihood is in use; otherwise we skip the computation).
+    # With a Beta prior on pi we use the posterior-mean pi as the reference.
     incl_probs = None
-    if pi_inclusion is not None:
+    pi_mean = None
+    if pi_prior is not None and pi_samples is not None:
+        pi_mean = float(jnp.mean(pi_samples))
+    pi_for_incl = pi_mean if pi_mean is not None else pi_inclusion
+    if pi_for_incl is not None:
         from bii.inference import inclusion_probs as _inclusion_probs
-        # Average over a (capped) subset of draws to keep the cost bounded.
         sub = w_flat[:: max(1, w_flat.shape[0] // 512)]
         per_draw = jax.vmap(
-            lambda w_: _inclusion_probs(w_, T, Z, sig_resolved, pi_inclusion,
+            lambda w_: _inclusion_probs(w_, T, Z, sig_resolved, pi_for_incl,
                                         noise_model, clip_s)
         )(sub)
         incl_probs = jnp.mean(per_draw, axis=0)
@@ -215,6 +242,9 @@ def fit_bii(
         "triplet_weights": triplet_weights,
         "inclusion_probs": incl_probs,
         "pi_inclusion": pi_inclusion,
+        "pi_prior": pi_prior,
+        "pi_samples": pi_samples,
+        "pi_mean": pi_mean,
         "kappa": kappa,
         "waic": waic,
         "alignment": {
