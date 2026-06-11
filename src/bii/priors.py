@@ -77,6 +77,5 @@ def make_dirichlet_logposterior(T, Z, sig, alpha, kappa=1.0, noise_model="additi
         return (kappa * ll
                 + jnp.sum(alpha * jnp.log(w + 1e-12))
                 + log_pi_prior)
->>>>>>> c3f134702e13d84a83bcc2b3474ba01c5d6fdc3a
 
     return logprob_fn_with_pi
