@@ -73,14 +73,6 @@ def weight_entropy(w_samples):
     return 1.0 - H / jnp.log(p)
 
 
-def _sig_to_sig2(sig):
-    """Convert sig to sig2: square if vector/scalar, pass through if matrix."""
-    sig = jnp.asarray(sig)
-    if sig.ndim <= 1:
-        return jnp.square(sig)
-    return sig
-
-
 def triplet_accuracy(w_samples, T, Z, sig, noise_model="additive"):
     """Triplet prediction accuracy for each posterior sample.
 

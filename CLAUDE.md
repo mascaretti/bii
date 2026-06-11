@@ -41,7 +41,7 @@ mypy src
 - `loglik_w()`: Log-likelihood given weights on simplex
 - `loglik_w_per_triplet()`: Per-triplet log-likelihood (for WAIC)
 - `loglik_theta()`: Likelihood in unconstrained theta-space via softmax
-- Supports scalar, diagonal (p,), and full (p, p) covariance matrices
+- Supports noise std as scalar, per-feature (p,), or per-triplet pre-resolved (n, 3) / (n, 3, p); `fit_bii` resolves pool-level per-point (N,) / (N, p) sigmas to per-triplet via indices. Full (non-diagonal) covariance matrices are NOT supported (Theorem 1's trace formulas would extend, but the code is element-wise diagonal).
 
 **priors.py** — Prior log-densities as composable factory functions
 - `make_dirichlet_logposterior()`: Returns `logprob_fn(theta) -> scalar`

@@ -94,11 +94,13 @@ def logP_log1mP_from_deltaV(delta, V, clip_s=None, link="probit"):  # noqa: N802
 
 
 def _sig_to_sig2(sig):
-    """Convert sig to sig2: square if vector/scalar, pass through if matrix."""
-    sig = jnp.asarray(sig)
-    if sig.ndim <= 1:
-        return jnp.square(sig)
-    return sig
+    """Square the noise std (scalar or (p,)).
+
+    Per-triplet pre-resolved sigmas (ndim >= 2) never reach this helper;
+    they are handled by :func:`_resolve_sig2`. Full (non-diagonal)
+    covariance matrices are not supported.
+    """
+    return jnp.square(jnp.asarray(sig))
 
 
 def _make_sig2_fn(sig, noise_model):

@@ -62,7 +62,10 @@ def fit_bii(
         key: JAX random key.
         X_pool: (N, p_x) clean embeddings.
         Z_pool: (N, p_z) noisy/normalised embeddings.
-        sig: noise std — scalar or (p,).
+        sig: noise std — scalar, per-feature (p,), or pool-level per-point
+            (N,) / per-point-diagonal (N, p), which are resolved to
+            per-triplet sigmas via the triplet indices. Full (non-diagonal)
+            covariance matrices are not supported.
         noise_model: ``"additive"`` or ``"multiplicative"``.
         n_triplets: destination pairs per anchor.
         anchor_fraction: fraction of pool used as anchors.
