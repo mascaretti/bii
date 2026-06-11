@@ -130,6 +130,8 @@ def make_triplets_zfar(key, X_pool, Z_pool, sig, n_triplets, anchor_fraction=0.1
         )
 
     sig2 = jnp.asarray(sig).astype(Z_pool.dtype) ** 2
+    if sig2.ndim == 0:
+        sig2 = jnp.full(Z_pool.shape[1], sig2, dtype=Z_pool.dtype)
     n_anchors = max(1, int(N * anchor_fraction))
 
     key, k_anchors = random.split(key)
@@ -397,8 +399,9 @@ def make_triplets_random_sparse(
     """
     # Local import to avoid a hard dependency from data.py to inference.py
     # at module load time.
-    from bii.inference import delta_V_one_triplet
     from scipy.stats import norm
+
+    from bii.inference import delta_V_one_triplet
 
     p = Z_pool.shape[1]
     if reference_w is None:
@@ -417,7 +420,7 @@ def make_triplets_random_sparse(
     sig2 = jnp.asarray(sig).astype(Z_c.dtype) ** 2
     if sig2.ndim == 0:
         sig2 = jnp.full(p, sig2, dtype=Z_c.dtype)
-    zi = Z_c[:, 1]; zj = Z_c[:, 2]; zk = Z_c[:, 0]
+    zi, zj, zk = Z_c[:, 1], Z_c[:, 2], Z_c[:, 0]
 
     def one(zi_, zj_, zk_):
         return delta_V_one_triplet(zi_, zj_, zk_, reference_w, sig2, sig2, sig2)
@@ -510,7 +513,6 @@ def make_triplets_z_softmax(
         sig2 = jnp.full(Z_pool.shape[1], sig2, dtype=Z_pool.dtype)
     N = Z_pool.shape[0]
     n_anchors = max(1, int(N * anchor_fraction))
-    total = n_anchors * n_triplets
 
     key, k_anchors, k_i, k_j = random.split(key, 4)
     perm = random.permutation(k_anchors, N)
@@ -612,7 +614,7 @@ def make_triplets_z_informative(
         score = jnp.where(i_idx == j_idx, -jnp.inf, score)
         # 4. top n_triplets by score
         top = jnp.argsort(-score)[:n_triplets]
-        i_keep = i_idx[top]; j_keep = j_idx[top]
+        i_keep, j_keep = i_idx[top], j_idx[top]
         k_rep = jnp.full((n_triplets,), k_idx)
         return jnp.stack([k_rep, i_keep, j_keep], axis=1)
 

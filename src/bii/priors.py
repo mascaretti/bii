@@ -9,6 +9,7 @@ from jax import numpy as jnp
 
 from bii.inference import loglik_w
 
+
 def make_dirichlet_logposterior(T, Z, sig, alpha, kappa=1.0, noise_model="additive",
                                 triplet_weights=None, clip_s=None, pi_inclusion=None,
                                 pi_prior=None):

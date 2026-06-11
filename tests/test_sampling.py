@@ -78,15 +78,25 @@ def test_vi_smoke_via_fit_bii():
 
 
 def test_vi_posterior_not_uniform():
-    """VI posterior should differ from uniform prior after seeing data."""
+    """VI posterior should down-weight a pure-noise Z dimension.
+
+    Note: scaling X by sqrt(w_star) does NOT make w identifiable — labels
+    come from unweighted X-distance and Z ≈ X, so uniform w is optimal
+    there. Identifiability requires a Z dimension that carries no signal
+    about X-distances; the posterior should push its weight toward 0.
+    """
     key = jr.PRNGKey(42)
-    w_star = jnp.array([0.7, 0.2, 0.1])
-    x_pool, z_pool = _make_pool(key, n=500, p=3, sig=0.05, w_star=w_star)
+    k1, k2, k3 = jr.split(key, 3)
+    x_pool = jr.normal(k1, (200, 2))
+    noise_dim = jr.normal(k2, (200, 1))
+    z_pool = jnp.concatenate(
+        [x_pool + 0.05 * jr.normal(k3, (200, 2)), noise_dim], axis=1
+    )
     result = fit_bii(
         key, x_pool, z_pool, sig=0.05,
-        inference_method="vi", n_triplets=100, anchor_fraction=0.5,
-        vi_steps=5000, vi_num_samples=2000,
+        inference_method="vi", n_triplets=50, anchor_fraction=0.3,
+        vi_steps=3000, vi_num_samples=500,
     )
     w_mean = result["w_samples"][:, 0, :].mean(0)
-    # Posterior should not be exactly uniform
-    assert not jnp.allclose(w_mean, jnp.ones(3) / 3, atol=0.01)
+    assert w_mean[2] < 0.1  # noise dim suppressed
+    assert w_mean[0] > 0.25 and w_mean[1] > 0.25  # signal dims retained

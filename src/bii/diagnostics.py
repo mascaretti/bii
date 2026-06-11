@@ -94,16 +94,31 @@ def triplet_accuracy(w_samples, T, Z, sig, noise_model="additive"):
     Returns:
         (S,) accuracy values in [0, 1].
     """
-    from bii.inference import _make_sig2_fn
-    sig2_fn = _make_sig2_fn(sig, noise_model)
+    from bii.inference import _make_sig2_fn, _resolve_sig2
     zi, zj, zk = Z[:, 1], Z[:, 2], Z[:, 0]
+    sig = jnp.asarray(sig)
+
+    if sig.ndim >= 2:
+        # Pre-resolved per-triplet sigmas — (n, 3) or (n, 3, p)
+        sig2_i, sig2_j, sig2_k = _resolve_sig2(sig, noise_model, zi, zj, zk)
+
+        def delta_fn(w):
+            def dv(zi, zj, zk, s2i, s2j, s2k):
+                return delta_V_one_triplet(zi, zj, zk, w, s2i, s2j, s2k)
+            delta, _V = jax.vmap(dv)(zi, zj, zk, sig2_i, sig2_j, sig2_k)
+            return delta
+    else:
+        sig2_fn = _make_sig2_fn(sig, noise_model)
+
+        def delta_fn(w):
+            def dv(zi, zj, zk):
+                return delta_V_one_triplet(zi, zj, zk, w,
+                                           sig2_fn(zi), sig2_fn(zj), sig2_fn(zk))
+            delta, _V = jax.vmap(dv)(zi, zj, zk)
+            return delta
 
     def accuracy_one(w):
-        def dv(zi, zj, zk):
-            return delta_V_one_triplet(zi, zj, zk, w,
-                                       sig2_fn(zi), sig2_fn(zj), sig2_fn(zk))
-        delta, _V = jax.vmap(dv)(zi, zj, zk)
-        pred = (delta <= 0.0).astype(jnp.float32)
+        pred = (delta_fn(w) <= 0.0).astype(jnp.float32)
         return jnp.mean(pred == T)
 
     return jax.lax.map(accuracy_one, w_samples)

@@ -7,7 +7,7 @@ from bii.fit import fit_bii
 
 EXPECTED_KEYS = {
     "w_samples", "raw_samples", "T", "Z", "triplet_indices",
-    "prior", "kappa", "waic", "elapsed_seconds", "diagnostics",
+    "kappa", "waic", "elapsed_seconds", "diagnostics",
 }
 
 
@@ -25,7 +25,7 @@ def test_end_to_end_dirichlet_nuts():
     X, Z = _make_pool(key, n=100, p=3, w_star=jnp.array([0.6, 0.3, 0.1]))
     result = fit_bii(
         key=key, X_pool=X, Z_pool=Z, sig=0.1,
-        prior="dirichlet", n_triplets=50, anchor_fraction=0.3,
+        n_triplets=50, anchor_fraction=0.3,
         num_samples=50, num_warmup=50, num_chains=1,
     )
     assert set(result.keys()) >= EXPECTED_KEYS
@@ -39,7 +39,7 @@ def test_end_to_end_dirichlet_vi():
     X, Z = _make_pool(key, n=100, p=3, w_star=jnp.array([0.6, 0.3, 0.1]))
     result = fit_bii(
         key=key, X_pool=X, Z_pool=Z, sig=0.1,
-        prior="dirichlet", n_triplets=50, anchor_fraction=0.3,
+        n_triplets=50, anchor_fraction=0.3,
         inference_method="vi", vi_steps=500, vi_num_samples=100,
     )
     assert set(result.keys()) >= EXPECTED_KEYS
