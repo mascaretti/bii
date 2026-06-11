@@ -451,3 +451,17 @@ def test_unknown_link_raises():
 
     with pytest.raises(ValueError):
         logP_log1mP_from_deltaV(jnp.zeros(3), jnp.ones(3), link="cauchy")
+
+
+def test_full_covariance_sig_raises():
+    """A (p, p) covariance matrix must fail loudly, not be silently sliced."""
+    import pytest
+
+    key = jr.PRNGKey(13)
+    T, Z = _make_simple_data(key, n=30, p=3)
+    w = jnp.ones(3) / 3
+    sig_full = 0.01 * jnp.eye(3)
+    with pytest.raises(ValueError, match="not supported"):
+        loglik_w(w, T, Z, sig=sig_full)
+    with pytest.raises(ValueError, match="not supported"):
+        loglik_w_per_triplet(w, T, Z, sig=sig_full)

@@ -129,9 +129,23 @@ def _resolve_sig2(sig, noise_model, zi, zj, zk):
 
     Returns:
         ``(sig2_i, sig2_j, sig2_k)`` — each scalar, (n_triplets,), or (n_triplets, p).
+
+    Raises:
+        ValueError: if a 2-D/3-D ``sig`` does not match the per-triplet
+            shapes above — in particular a full (p, p) covariance matrix,
+            which is not supported.
     """
     sig = jnp.asarray(sig)
     if sig.ndim >= 2:
+        n, p = zi.shape[0], zi.shape[1]
+        expected = {(n, 3), (n, 3, p)}
+        if sig.shape not in expected:
+            raise ValueError(
+                f"sig of shape {sig.shape} is not a valid per-triplet sigma "
+                f"array; expected (n_triplets, 3) = ({n}, 3) or "
+                f"(n_triplets, 3, p) = ({n}, 3, {p}). Full (non-diagonal) "
+                f"covariance matrices are not supported."
+            )
         # Pre-resolved per-triplet sigmas.
         # Column order matches Z: 0=anchor(k), 1=dest1(i), 2=dest2(j)
         sig2_i = sig[:, 1] ** 2

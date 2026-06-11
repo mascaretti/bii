@@ -149,11 +149,18 @@ def fit_bii(
     if sig_arr.ndim == 1 and sig_arr.shape[0] == N:
         # Pool-level per-point sigmas (N,) -> triplet-level (n_triplets, 3)
         sig_resolved = sig_arr[indices]
-    elif sig_arr.ndim == 2 and sig_arr.shape[0] == N:
+    elif sig_arr.ndim == 2 and sig_arr.shape == (N, p):
         # Pool-level per-point diagonal sigmas (N, p) -> (n_triplets, 3, p)
         sig_resolved = sig_arr[indices]
-    else:
+    elif sig_arr.ndim == 0 or (sig_arr.ndim == 1 and sig_arr.shape[0] == p):
         sig_resolved = sig
+    else:
+        raise ValueError(
+            f"sig of shape {sig_arr.shape} is not interpretable: expected a "
+            f"scalar, per-feature (p,) = ({p},), per-point (N,) = ({N},), or "
+            f"per-point diagonal (N, p) = ({N}, {p}). Full (non-diagonal) "
+            f"covariance matrices are not supported."
+        )
 
     # Step 2 — build log-posterior. With pi_prior, the position vector grows
     # by one entry (logit_pi at the end), and pi_inclusion is ignored.

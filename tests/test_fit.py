@@ -195,3 +195,17 @@ def test_fit_with_logit_link():
     assert jnp.allclose(jnp.sum(result["w_samples"], axis=-1), 1.0, atol=1e-5)
     assert jnp.isfinite(result["waic"])
     assert jnp.all(jnp.isfinite(result["alignment"]["alignment_index"]))
+
+
+def test_fit_rejects_uninterpretable_sig():
+    """fit_bii fails loudly on sigma shapes it cannot interpret."""
+    import pytest
+
+    key = jr.PRNGKey(11)
+    x_pool, z_pool = _make_pool(key, n=100, p=3)
+    with pytest.raises(ValueError, match="not interpretable"):
+        # (p, p) full covariance — not supported
+        fit_bii(key, x_pool, z_pool, sig=0.01 * jnp.eye(3), n_triplets=10)
+    with pytest.raises(ValueError, match="not interpretable"):
+        # 1-D vector that is neither (p,) nor (N,)
+        fit_bii(key, x_pool, z_pool, sig=jnp.full(7, 0.1), n_triplets=10)
