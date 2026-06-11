@@ -55,21 +55,41 @@ def delta_V_one_triplet(zi, zj, zk, w, sig2_i, sig2_j, sig2_k):  # noqa: N802
     return mu, V
 
 
-def logP_log1mP_from_deltaV(delta, V, clip_s=None):  # noqa: N802
-    """Log probabilities from delta and V via normal CDF.
+# Slope-matching constant for the logistic link: sigmoid(1.702 s) deviates
+# from Phi(s) by less than 0.01 uniformly in s (Camilli 1994, IRT tradition).
+LOGIT_SCALE = 1.702
+
+
+def logP_log1mP_from_deltaV(delta, V, clip_s=None, link="probit"):  # noqa: N802
+    """Log probabilities from delta and V via the chosen link CDF.
 
     When ``clip_s`` is given, ``s = delta / sqrt(V)`` is truncated to
-    ``[-clip_s, clip_s]`` before the normal CDF. The clipped saturating
+    ``[-clip_s, clip_s]`` before the link CDF. The clipped saturating
     regime contributes a bounded loss and zero gradient in ``w``, which
     defuses the magnesium-collapse failure mode without changing the
-    sampler. Equivalent to a censored-probit likelihood with the censoring
+    sampler. Equivalent to a censored likelihood with the censoring
     threshold at ``clip_s``.
+
+    ``link`` selects the CDF applied to ``s``:
+        ``"probit"``: normal CDF (the Gaussian approximation of Theorem 1).
+            Tail penalty ``~ -s^2 / 2``.
+        ``"logit"``: slope-matched logistic CDF ``sigmoid(LOGIT_SCALE * s)``.
+            Tail penalty ``~ -LOGIT_SCALE * |s|`` (log-linear), matching the
+            sub-exponential tails of the exact distance-difference statistic;
+            robust to the dominated-coordinate regime where the Gaussian
+            shape approximation fails.
     """
     s = delta / jnp.sqrt(V + 1e-12)
     if clip_s is not None:
         s = jnp.clip(s, -clip_s, clip_s)
-    logP = log_ndtr(-s)  # noqa: N806
-    log1mP = log_ndtr(s)  # noqa: N806
+    if link == "probit":
+        logP = log_ndtr(-s)  # noqa: N806
+        log1mP = log_ndtr(s)  # noqa: N806
+    elif link == "logit":
+        logP = jax.nn.log_sigmoid(-LOGIT_SCALE * s)  # noqa: N806
+        log1mP = jax.nn.log_sigmoid(LOGIT_SCALE * s)  # noqa: N806
+    else:
+        raise ValueError(f"Unknown link: {link!r} (expected 'probit' or 'logit')")
     return logP, log1mP
 
 
@@ -122,7 +142,7 @@ def _resolve_sig2(sig, noise_model, zi, zj, zk):
 
 
 def loglik_w(w, T, Z, sig, noise_model="additive", triplet_weights=None, clip_s=None,
-             pi_inclusion=None):
+             pi_inclusion=None, link="probit"):
     """Log-likelihood given weights w directly on the simplex.
 
     Args:
@@ -153,6 +173,9 @@ def loglik_w(w, T, Z, sig, noise_model="additive", triplet_weights=None, clip_s=
             "probabilistic triplet selection that evolves with w" version
             of the static [eps, 1-eps] filter without a new MCMC kernel.
             Default ``None`` recovers the plain probit likelihood.
+        link: ``"probit"`` (normal CDF, default) or ``"logit"``
+            (slope-matched logistic CDF with log-linear tails; see
+            :func:`logP_log1mP_from_deltaV`).
     """
     zi, zj, zk = Z[:, 1], Z[:, 2], Z[:, 0]
     sig = jnp.asarray(sig)
@@ -174,7 +197,7 @@ def loglik_w(w, T, Z, sig, noise_model="additive", triplet_weights=None, clip_s=
 
         delta, V = jax.vmap(dv)(zi, zj, zk)
 
-    logP, log1mP = logP_log1mP_from_deltaV(delta, V, clip_s=clip_s)
+    logP, log1mP = logP_log1mP_from_deltaV(delta, V, clip_s=clip_s, link=link)
     log_pt = T * logP + (1.0 - T) * log1mP
 
     if pi_inclusion is None:
@@ -193,7 +216,7 @@ def loglik_w(w, T, Z, sig, noise_model="additive", triplet_weights=None, clip_s=
     return jnp.sum(triplet_weights * per_triplet)
 
 
-def loglik_w_per_triplet(w, T, Z, sig, noise_model="additive"):
+def loglik_w_per_triplet(w, T, Z, sig, noise_model="additive", link="probit"):
     """Per-triplet log-likelihood given weights w on the simplex."""
     zi, zj, zk = Z[:, 1], Z[:, 2], Z[:, 0]
     sig = jnp.asarray(sig)
@@ -214,16 +237,17 @@ def loglik_w_per_triplet(w, T, Z, sig, noise_model="additive"):
 
         delta, V = jax.vmap(dv)(zi, zj, zk)
 
-    logP, log1mP = logP_log1mP_from_deltaV(delta, V)
+    logP, log1mP = logP_log1mP_from_deltaV(delta, V, link=link)
     return T * logP + (1.0 - T) * log1mP
 
 
-def loglik_theta(theta, T, Z, sig, noise_model="additive"):
+def loglik_theta(theta, T, Z, sig, noise_model="additive", link="probit"):
     """Log-likelihood in unconstrained theta-space via softmax."""
-    return loglik_w(jax.nn.softmax(theta), T, Z, sig, noise_model)
+    return loglik_w(jax.nn.softmax(theta), T, Z, sig, noise_model, link=link)
 
 
-def inclusion_probs(w, T, Z, sig, pi_inclusion, noise_model="additive", clip_s=None):
+def inclusion_probs(w, T, Z, sig, pi_inclusion, noise_model="additive", clip_s=None,
+                    link="probit"):
     """Posterior P(m_t = 1 | T_t, w) under the inclusion-mixture model.
 
     The Rao-Blackwellised version of explicit Gibbs sampling of inclusion
@@ -257,7 +281,7 @@ def inclusion_probs(w, T, Z, sig, pi_inclusion, noise_model="additive", clip_s=N
             return delta_V_one_triplet(zi, zj, zk, w,
                                        sig2_fn(zi), sig2_fn(zj), sig2_fn(zk))
         delta, V = jax.vmap(dv)(zi, zj, zk)
-    logP, log1mP = logP_log1mP_from_deltaV(delta, V, clip_s=clip_s)
+    logP, log1mP = logP_log1mP_from_deltaV(delta, V, clip_s=clip_s, link=link)
     log_pt = T * logP + (1.0 - T) * log1mP
     log_pi = jnp.log(pi_inclusion)
     log_one_minus_pi = jnp.log1p(-pi_inclusion)

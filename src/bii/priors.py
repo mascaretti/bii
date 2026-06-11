@@ -12,7 +12,7 @@ from bii.inference import loglik_w
 
 def make_dirichlet_logposterior(T, Z, sig, alpha, kappa=1.0, noise_model="additive",
                                 triplet_weights=None, clip_s=None, pi_inclusion=None,
-                                pi_prior=None):
+                                pi_prior=None, link="probit"):
     """Return ``logprob_fn(position) -> scalar`` for a Dirichlet prior.
 
     Args:
@@ -37,6 +37,8 @@ def make_dirichlet_logposterior(T, Z, sig, alpha, kappa=1.0, noise_model="additi
             with ``theta``. The Beta prior is implemented with the Jacobian
             of the logit transform absorbed into the density, so the prior
             on ``logit_pi`` is the push-forward of ``Beta(a, b)`` on ``pi``.
+        link: ``"probit"`` (default) or ``"logit"``; forwarded to
+            :func:`bii.inference.loglik_w`.
 
     Returns:
         A callable that takes either a ``(p,)`` array (when ``pi_prior`` is
@@ -48,7 +50,7 @@ def make_dirichlet_logposterior(T, Z, sig, alpha, kappa=1.0, noise_model="additi
             w = jax.nn.softmax(theta)
             ll = loglik_w(w, T, Z, sig, noise_model,
                           triplet_weights=triplet_weights, clip_s=clip_s,
-                          pi_inclusion=pi_inclusion)
+                          pi_inclusion=pi_inclusion, link=link)
             return kappa * ll + jnp.sum(alpha * jnp.log(w + 1e-12))
         return logprob_fn
 
@@ -65,7 +67,7 @@ def make_dirichlet_logposterior(T, Z, sig, alpha, kappa=1.0, noise_model="additi
         w = jax.nn.softmax(theta)
         ll = loglik_w(w, T, Z, sig, noise_model,
                       triplet_weights=triplet_weights, clip_s=clip_s,
-                      pi_inclusion=pi)
+                      pi_inclusion=pi, link=link)
         # Beta(a, b) prior on pi with logit-transform Jacobian absorbed:
         #   log p(pi) = (a-1) log pi + (b-1) log(1-pi) + const
         # Jacobian: d pi / d logit_pi = pi (1 - pi), so

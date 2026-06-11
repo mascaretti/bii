@@ -33,6 +33,8 @@ def fit_bii(
     kappa=1.0,
     # Likelihood robustifier
     clip_s=None,
+    # Link function for the triplet probability
+    link="probit",
     # Inclusion-mixture likelihood (probabilistic triplet inclusion that
     # evolves with w; set to a float in (0, 1) to enable)
     pi_inclusion=None,
@@ -82,6 +84,13 @@ def fit_bii(
             for saturating triplets; ``clip_s=2.5`` is a sensible default
             ("any confidence stronger than ~99.4% is treated as 99.4%").
             Default ``None`` = no clipping.
+        link: ``"probit"`` (normal CDF, default) or ``"logit"``
+            (slope-matched logistic CDF). The logistic link has log-linear
+            tails ``~ -1.702 |s|`` instead of the probit's ``~ -s^2/2``,
+            matching the sub-exponential tails of the exact
+            distance-difference statistic; use it when single coordinates
+            dominate the metric (anisotropic scales, heavy tails), where
+            the Gaussian shape approximation of the probit is least valid.
         pi_inclusion: optional float in (0, 1). Enables an inclusion-mixture
             likelihood: each triplet is treated as "informative" with prob
             ``pi`` and "noise" (label uniform) with prob ``1 - pi``. The
@@ -148,7 +157,7 @@ def fit_bii(
     logprob_fn = make_dirichlet_logposterior(
         T, Z, sig_resolved, alpha, kappa, noise_model,
         triplet_weights=triplet_weights, clip_s=clip_s,
-        pi_inclusion=pi_inclusion, pi_prior=pi_prior,
+        pi_inclusion=pi_inclusion, pi_prior=pi_prior, link=link,
     )
     position_dim = p + 1 if pi_prior is not None else p
     init_position = jnp.zeros(position_dim)
@@ -206,7 +215,8 @@ def fit_bii(
 
     # WAIC (optional — can OOM with large triplet sets + many samples)
     w_flat = w_samples.reshape(-1, p)
-    waic = compute_waic(w_flat, T, Z, sig_resolved, noise_model) if compute_waic_flag else None
+    waic = (compute_waic(w_flat, T, Z, sig_resolved, noise_model, link=link)
+            if compute_waic_flag else None)
 
     # Posterior-mean inclusion probability per triplet (only meaningful when
     # the mixture likelihood is in use; otherwise we skip the computation).
@@ -221,7 +231,7 @@ def fit_bii(
         sub = w_flat[:: max(1, w_flat.shape[0] // 512)]
         per_draw = jax.vmap(
             lambda w_: _inclusion_probs(w_, T, Z, sig_resolved, pi_for_incl,
-                                        noise_model, clip_s)
+                                        noise_model, clip_s, link=link)
         )(sub)
         incl_probs = jnp.mean(per_draw, axis=0)
 
@@ -229,7 +239,7 @@ def fit_bii(
     from bii.diagnostics import alignment_index as _alignment_index
     entropy_scores = weight_entropy(w_flat)
     accuracy_scores = triplet_accuracy(w_flat, T, Z, sig_resolved, noise_model)
-    alignment_idx = _alignment_index(w_flat, T, Z, sig_resolved, noise_model)
+    alignment_idx = _alignment_index(w_flat, T, Z, sig_resolved, noise_model, link=link)
 
     elapsed = time.perf_counter() - t0
 

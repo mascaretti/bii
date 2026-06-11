@@ -182,3 +182,16 @@ def test_fit_per_point_sig():
     assert jnp.isfinite(result["waic"])
     acc = result["alignment"]["triplet_accuracy"]
     assert jnp.all(acc >= 0.0) and jnp.all(acc <= 1.0)
+
+
+def test_fit_with_logit_link():
+    """fit_bii runs end-to-end with the logistic link; WAIC uses it too."""
+    key = jr.PRNGKey(10)
+    x_pool, z_pool = _make_pool(key, n=100, p=3)
+    result = fit_bii(
+        key, x_pool, z_pool, sig=0.1, link="logit",
+        n_triplets=30, num_samples=30, num_warmup=30, num_chains=1,
+    )
+    assert jnp.allclose(jnp.sum(result["w_samples"], axis=-1), 1.0, atol=1e-5)
+    assert jnp.isfinite(result["waic"])
+    assert jnp.all(jnp.isfinite(result["alignment"]["alignment_index"]))

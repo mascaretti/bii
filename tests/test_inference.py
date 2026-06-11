@@ -390,3 +390,64 @@ def test_preresolved_sig_matches_scalar():
     per_scalar = loglik_w_per_triplet(w, T, Z, sig=0.1)
     per_pre = loglik_w_per_triplet(w, T, Z, sig=sig_pre)
     assert jnp.allclose(per_scalar, per_pre, atol=1e-4)
+
+
+# --- logit link ---
+
+def test_logit_link_slope_matched_to_probit():
+    """sigmoid(1.702 s) deviates from Phi(s) by < 0.01 uniformly in s."""
+    from jax.scipy.special import ndtr
+
+    from bii.inference import LOGIT_SCALE, logP_log1mP_from_deltaV
+
+    s = jnp.linspace(-8.0, 8.0, 400)
+    logP, _ = logP_log1mP_from_deltaV(s, jnp.ones_like(s), link="logit")
+    p_logit = jnp.exp(logP)
+    p_probit = ndtr(-s)
+    assert LOGIT_SCALE == 1.702
+    assert jnp.max(jnp.abs(p_logit - p_probit)) < 0.01
+
+
+def test_logit_link_lighter_saturating_penalty():
+    """On a saturating-wrong triplet, the logistic loglik is far less harsh."""
+    T, Z = _saturating_data()
+    w = jnp.ones(3) / 3
+    ll_probit = loglik_w(w, T, Z, sig=0.1)
+    ll_logit = loglik_w(w, T, Z, sig=0.1, link="logit")
+    assert ll_logit > ll_probit
+    # probit tail ~ -s^2/2, logit tail ~ -1.702|s|: orders of magnitude apart
+    assert ll_logit / ll_probit < 0.5
+
+
+def test_logit_link_gradient_finite():
+    key = jr.PRNGKey(10)
+    T, Z = _make_simple_data(key, n=30, p=3)
+    w = jnp.ones(3) / 3
+    g = jax.grad(loglik_w)(w, T, Z, sig=0.1, link="logit")
+    assert jnp.all(jnp.isfinite(g))
+
+
+def test_logit_link_composes_with_mixture_and_clip():
+    key = jr.PRNGKey(11)
+    T, Z = _make_simple_data(key, n=30, p=3)
+    w = jnp.ones(3) / 3
+    ll = loglik_w(w, T, Z, sig=0.1, link="logit", pi_inclusion=0.8, clip_s=2.5)
+    assert jnp.isfinite(ll)
+
+
+def test_logit_link_per_triplet_sums_to_total():
+    key = jr.PRNGKey(12)
+    T, Z = _make_simple_data(key, n=30, p=3)
+    w = jnp.ones(3) / 3
+    total = loglik_w(w, T, Z, sig=0.1, link="logit")
+    per_t = loglik_w_per_triplet(w, T, Z, sig=0.1, link="logit")
+    assert jnp.allclose(jnp.sum(per_t), total, atol=1e-4)
+
+
+def test_unknown_link_raises():
+    import pytest
+
+    from bii.inference import logP_log1mP_from_deltaV
+
+    with pytest.raises(ValueError):
+        logP_log1mP_from_deltaV(jnp.zeros(3), jnp.ones(3), link="cauchy")
