@@ -136,3 +136,51 @@ def test_logposterior_triplet_weights_forwarded():
     ll_plain = fn_plain(theta) - prior_term
     ll_double = fn_double(theta) - prior_term
     assert jnp.allclose(ll_double, 2.0 * ll_plain, atol=1e-4)
+
+
+# --- tau_prior: Gamma(a, b) on the extra relation-noise std tau ---
+
+def test_tau_prior_position_grows_by_one():
+    T, Z = _make_data(jr.PRNGKey(10), p=4)
+    logprob_fn = make_dirichlet_logposterior(
+        T, Z, sig=0.1, alpha=jnp.ones(4), tau_prior=(2.0, 2.0)
+    )
+    lp = logprob_fn(jnp.zeros(5))
+    assert lp.shape == ()
+    assert jnp.isfinite(lp)
+
+
+def test_tau_prior_gradient_finite():
+    T, Z = _make_data(jr.PRNGKey(11), p=3)
+    logprob_fn = make_dirichlet_logposterior(
+        T, Z, sig=0.1, alpha=jnp.ones(3), tau_prior=(2.0, 2.0)
+    )
+    g = jax.grad(logprob_fn)(jnp.zeros(4))
+    assert g.shape == (4,)
+    assert jnp.all(jnp.isfinite(g))
+
+
+def test_tau_prior_gamma_term_penalises_large_tau():
+    """The b (rate) hyperparameter penalises large tau (slopes differ)."""
+    T, Z = _make_data(jr.PRNGKey(12), p=3)
+    fn_loose = make_dirichlet_logposterior(
+        T, Z, sig=0.1, alpha=jnp.ones(3), tau_prior=(2.0, 1.0)
+    )
+    fn_tight = make_dirichlet_logposterior(
+        T, Z, sig=0.1, alpha=jnp.ones(3), tau_prior=(2.0, 10.0)
+    )
+    pos_hi = jnp.concatenate([jnp.zeros(3), jnp.array([2.0])])   # tau ~ 7.4
+    pos_lo = jnp.concatenate([jnp.zeros(3), jnp.array([-1.0])])  # tau ~ 0.37
+    # Difference of differences: the tight prior loses more when tau grows.
+    assert (fn_tight(pos_hi) - fn_tight(pos_lo)) < (fn_loose(pos_hi) - fn_loose(pos_lo))
+
+
+def test_tau_prior_with_pi_prior_raises():
+    import pytest
+
+    T, Z = _make_data(jr.PRNGKey(13), p=3)
+    with pytest.raises(NotImplementedError):
+        make_dirichlet_logposterior(
+            T, Z, sig=0.1, alpha=jnp.ones(3),
+            pi_prior=(2.0, 2.0), tau_prior=(2.0, 2.0),
+        )

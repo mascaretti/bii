@@ -40,6 +40,9 @@ def fit_bii(
     pi_inclusion=None,
     # Optional Beta(a, b) prior on pi (overrides pi_inclusion when given)
     pi_prior=None,
+    # Optional Gamma(a, b) prior on an extra relation-noise std tau
+    # (V -> V + tau^2; sampled jointly; mutually exclusive with pi_prior)
+    tau_prior=None,
     # Inference method
     inference_method="nuts",
     # NUTS params
@@ -109,6 +112,16 @@ def fit_bii(
             ``(num_samples, num_chains)`` plus a posterior-mean
             ``pi_mean``. Use ``Beta(2, 2)`` for a weakly informative
             default that keeps mass away from 0 and 1.
+        tau_prior: optional ``(a, b)`` Gamma hyperparameters that put a
+            ``Gamma(a, b)`` prior on an extra relation-noise std ``tau``,
+            inflating the per-triplet variance to ``V + tau^2`` and
+            sampling ``tau`` jointly with ``theta`` (via ``log_tau``).
+            Recalibrates the standardised gap when the target-source
+            signal is weak and V (measurement noise only) understates the
+            true uncertainty. The result dict gains ``tau_samples`` of
+            shape ``(num_samples, num_chains)`` and ``tau_mean``.
+            Mutually exclusive with ``pi_prior``; composes with a fixed
+            ``pi_inclusion``, ``clip_s`` and ``link``.
         inference_method: ``"nuts"`` or ``"vi"``.
         num_samples: posterior draws per chain (NUTS).
         num_warmup: NUTS warmup steps.
@@ -162,14 +175,15 @@ def fit_bii(
             f"covariance matrices are not supported."
         )
 
-    # Step 2 — build log-posterior. With pi_prior, the position vector grows
-    # by one entry (logit_pi at the end), and pi_inclusion is ignored.
+    # Step 2 — build log-posterior. With pi_prior or tau_prior, the position
+    # vector grows by one entry (logit_pi / log_tau at the end).
     logprob_fn = make_dirichlet_logposterior(
         T, Z, sig_resolved, alpha, kappa, noise_model,
         triplet_weights=triplet_weights, clip_s=clip_s,
         pi_inclusion=pi_inclusion, pi_prior=pi_prior, link=link,
+        tau_prior=tau_prior,
     )
-    position_dim = p + 1 if pi_prior is not None else p
+    position_dim = p + 1 if (pi_prior is not None or tau_prior is not None) else p
     init_position = jnp.zeros(position_dim)
 
     # Step 3 — run inference
@@ -184,9 +198,15 @@ def fit_bii(
             theta_samples = raw_samples[..., :p]
             logit_pi_samples = raw_samples[..., p]
             pi_samples = jax.nn.sigmoid(logit_pi_samples)
+            tau_samples = None
+        elif tau_prior is not None:
+            theta_samples = raw_samples[..., :p]
+            tau_samples = jnp.exp(raw_samples[..., p])
+            pi_samples = None
         else:
             theta_samples = raw_samples
             pi_samples = None
+            tau_samples = None
         w_samples = jax.vmap(jax.vmap(jax.nn.softmax))(theta_samples)
 
         diagnostics = {
@@ -198,9 +218,9 @@ def fit_bii(
             diagnostics["ess"] = compute_ess(w_samples)
 
     elif inference_method == "vi":
-        if pi_prior is not None:
+        if pi_prior is not None or tau_prior is not None:
             raise NotImplementedError(
-                "VI with a Beta prior on pi is not yet supported; use NUTS."
+                "VI with a learned pi or tau is not yet supported; use NUTS."
             )
         key, key_vi, key_sample = random.split(key, 3)
 
@@ -213,6 +233,7 @@ def fit_bii(
         raw_samples = theta_samples[:, None, :]
         w_samples = w_flat_vi[:, None, :]
         pi_samples = None
+        tau_samples = None
 
         diagnostics = {
             "elbo_history": elbo_history,
@@ -223,9 +244,13 @@ def fit_bii(
     else:
         raise ValueError(f"Unknown inference_method: {inference_method!r}")
 
-    # WAIC (optional — can OOM with large triplet sets + many samples)
+    # WAIC (optional — can OOM with large triplet sets + many samples).
+    # With a learned tau, score at the posterior-mean tau^2.
     w_flat = w_samples.reshape(-1, p)
-    waic = (compute_waic(w_flat, T, Z, sig_resolved, noise_model, link=link)
+    tau_mean = float(jnp.mean(tau_samples)) if tau_samples is not None else None
+    tau2_eval = float(jnp.mean(tau_samples**2)) if tau_samples is not None else 0.0
+    waic = (compute_waic(w_flat, T, Z, sig_resolved, noise_model, link=link,
+                         tau2=tau2_eval)
             if compute_waic_flag else None)
 
     # Posterior-mean inclusion probability per triplet (only meaningful when
@@ -245,11 +270,12 @@ def fit_bii(
         )(sub)
         incl_probs = jnp.mean(per_draw, axis=0)
 
-    # Alignment measures
+    # Alignment measures (scored at the posterior-mean tau^2 when learned)
     from bii.diagnostics import alignment_index as _alignment_index
     entropy_scores = weight_entropy(w_flat)
     accuracy_scores = triplet_accuracy(w_flat, T, Z, sig_resolved, noise_model)
-    alignment_idx = _alignment_index(w_flat, T, Z, sig_resolved, noise_model, link=link)
+    alignment_idx = _alignment_index(w_flat, T, Z, sig_resolved, noise_model,
+                                     link=link, tau2=tau2_eval)
 
     elapsed = time.perf_counter() - t0
 
@@ -265,6 +291,9 @@ def fit_bii(
         "pi_prior": pi_prior,
         "pi_samples": pi_samples,
         "pi_mean": pi_mean,
+        "tau_prior": tau_prior,
+        "tau_samples": tau_samples,
+        "tau_mean": tau_mean,
         "kappa": kappa,
         "waic": waic,
         "alignment": {

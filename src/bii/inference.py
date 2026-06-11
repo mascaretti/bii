@@ -60,7 +60,7 @@ def delta_V_one_triplet(zi, zj, zk, w, sig2_i, sig2_j, sig2_k):  # noqa: N802
 LOGIT_SCALE = 1.702
 
 
-def logP_log1mP_from_deltaV(delta, V, clip_s=None, link="probit"):  # noqa: N802
+def logP_log1mP_from_deltaV(delta, V, clip_s=None, link="probit", tau2=0.0):  # noqa: N802
     """Log probabilities from delta and V via the chosen link CDF.
 
     When ``clip_s`` is given, ``s = delta / sqrt(V)`` is truncated to
@@ -78,8 +78,15 @@ def logP_log1mP_from_deltaV(delta, V, clip_s=None, link="probit"):  # noqa: N802
             sub-exponential tails of the exact distance-difference statistic;
             robust to the dominated-coordinate regime where the Gaussian
             shape approximation fails.
+
+    ``tau2`` is an extra variance added to ``V`` before standardising:
+    ``s = delta / sqrt(V + tau2)``. It models relation noise between the
+    target and the source that the measurement-noise ``V`` omits (the
+    weak-signal case where the model's confidence saturates because V is
+    too small). ``tau2 = 0`` recovers the plain statistic. May be a traced
+    scalar so ``tau`` can be sampled jointly with the weights.
     """
-    s = delta / jnp.sqrt(V + 1e-12)
+    s = delta / jnp.sqrt(V + tau2 + 1e-12)
     if clip_s is not None:
         s = jnp.clip(s, -clip_s, clip_s)
     if link == "probit":
@@ -158,7 +165,7 @@ def _resolve_sig2(sig, noise_model, zi, zj, zk):
 
 
 def loglik_w(w, T, Z, sig, noise_model="additive", triplet_weights=None, clip_s=None,
-             pi_inclusion=None, link="probit"):
+             pi_inclusion=None, link="probit", tau2=0.0):
     """Log-likelihood given weights w directly on the simplex.
 
     Args:
@@ -192,6 +199,8 @@ def loglik_w(w, T, Z, sig, noise_model="additive", triplet_weights=None, clip_s=
         link: ``"probit"`` (normal CDF, default) or ``"logit"``
             (slope-matched logistic CDF with log-linear tails; see
             :func:`logP_log1mP_from_deltaV`).
+        tau2: extra (relation-noise) variance added to ``V`` before
+            standardising; see :func:`logP_log1mP_from_deltaV`. Default 0.
     """
     zi, zj, zk = Z[:, 1], Z[:, 2], Z[:, 0]
     sig = jnp.asarray(sig)
@@ -213,7 +222,7 @@ def loglik_w(w, T, Z, sig, noise_model="additive", triplet_weights=None, clip_s=
 
         delta, V = jax.vmap(dv)(zi, zj, zk)
 
-    logP, log1mP = logP_log1mP_from_deltaV(delta, V, clip_s=clip_s, link=link)
+    logP, log1mP = logP_log1mP_from_deltaV(delta, V, clip_s=clip_s, link=link, tau2=tau2)
     log_pt = T * logP + (1.0 - T) * log1mP
 
     if pi_inclusion is None:
@@ -232,7 +241,7 @@ def loglik_w(w, T, Z, sig, noise_model="additive", triplet_weights=None, clip_s=
     return jnp.sum(triplet_weights * per_triplet)
 
 
-def loglik_w_per_triplet(w, T, Z, sig, noise_model="additive", link="probit"):
+def loglik_w_per_triplet(w, T, Z, sig, noise_model="additive", link="probit", tau2=0.0):
     """Per-triplet log-likelihood given weights w on the simplex."""
     zi, zj, zk = Z[:, 1], Z[:, 2], Z[:, 0]
     sig = jnp.asarray(sig)
@@ -253,7 +262,7 @@ def loglik_w_per_triplet(w, T, Z, sig, noise_model="additive", link="probit"):
 
         delta, V = jax.vmap(dv)(zi, zj, zk)
 
-    logP, log1mP = logP_log1mP_from_deltaV(delta, V, link=link)
+    logP, log1mP = logP_log1mP_from_deltaV(delta, V, link=link, tau2=tau2)
     return T * logP + (1.0 - T) * log1mP
 
 

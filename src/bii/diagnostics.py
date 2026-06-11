@@ -6,10 +6,11 @@ from jax import numpy as jnp
 from bii.inference import delta_V_one_triplet, loglik_w_per_triplet
 
 
-def compute_waic(w_samples_flat, T, Z, sig, noise_model="additive", link="probit"):
+def compute_waic(w_samples_flat, T, Z, sig, noise_model="additive", link="probit",
+                 tau2=0.0):
     """Compute WAIC using lax.map to prevent OOM."""
     per_triplet_ll = jax.lax.map(
-        lambda w: loglik_w_per_triplet(w, T, Z, sig, noise_model, link=link),
+        lambda w: loglik_w_per_triplet(w, T, Z, sig, noise_model, link=link, tau2=tau2),
         w_samples_flat
     )
 
@@ -116,7 +117,8 @@ def triplet_accuracy(w_samples, T, Z, sig, noise_model="additive"):
     return jax.lax.map(accuracy_one, w_samples)
 
 
-def alignment_index(w_samples, T, Z, sig, noise_model="additive", link="probit"):
+def alignment_index(w_samples, T, Z, sig, noise_model="additive", link="probit",
+                    tau2=0.0):
     """Normalised cross-entropy alignment index.
 
     Maps the mean per-triplet log-likelihood to [0, 1]:
@@ -133,7 +135,7 @@ def alignment_index(w_samples, T, Z, sig, noise_model="additive", link="probit")
         (S,) alignment index values in [0, 1].
     """
     def delta_one(w):
-        ll = loglik_w_per_triplet(w, T, Z, sig, noise_model, link=link)
+        ll = loglik_w_per_triplet(w, T, Z, sig, noise_model, link=link, tau2=tau2)
         mean_ll = jnp.mean(ll)
         return 1.0 + mean_ll / jnp.log(2.0)
 

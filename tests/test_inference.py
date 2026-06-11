@@ -465,3 +465,31 @@ def test_full_covariance_sig_raises():
         loglik_w(w, T, Z, sig=sig_full)
     with pytest.raises(ValueError, match="not supported"):
         loglik_w_per_triplet(w, T, Z, sig=sig_full)
+
+
+# --- tau2 (extra relation-noise variance) ---
+
+def test_tau2_zero_recovers_plain():
+    key = jr.PRNGKey(20)
+    T, Z = _make_simple_data(key, n=30, p=3)
+    w = jnp.ones(3) / 3
+    assert jnp.allclose(loglik_w(w, T, Z, sig=0.1),
+                        loglik_w(w, T, Z, sig=0.1, tau2=0.0), atol=1e-6)
+
+
+def test_tau2_deflates_saturating_confidence():
+    """Large tau2 drives every per-triplet probability toward 1/2."""
+    T, Z = _saturating_data()
+    w = jnp.ones(3) / 3
+    ll_plain = loglik_w(w, T, Z, sig=0.1)
+    ll_tau = loglik_w(w, T, Z, sig=0.1, tau2=1e6)
+    assert ll_tau > ll_plain
+    assert jnp.allclose(ll_tau, jnp.log(0.5), atol=0.05)
+
+
+def test_tau2_gradient_finite():
+    key = jr.PRNGKey(21)
+    T, Z = _make_simple_data(key, n=30, p=3)
+    w = jnp.ones(3) / 3
+    g = jax.grad(loglik_w)(w, T, Z, sig=0.1, tau2=0.5)
+    assert jnp.all(jnp.isfinite(g))

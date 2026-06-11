@@ -209,3 +209,31 @@ def test_fit_rejects_uninterpretable_sig():
     with pytest.raises(ValueError, match="not interpretable"):
         # 1-D vector that is neither (p,) nor (N,)
         fit_bii(key, x_pool, z_pool, sig=jnp.full(7, 0.1), n_triplets=10)
+
+
+def test_fit_with_tau_prior():
+    """Gamma prior on tau: sampled jointly, reported with posterior mean."""
+    key = jr.PRNGKey(12)
+    x_pool, z_pool = _make_pool(key, n=100, p=3)
+    num_samples, num_chains = 30, 2
+    result = fit_bii(
+        key, x_pool, z_pool, sig=0.1, tau_prior=(2.0, 2.0),
+        n_triplets=30, num_samples=num_samples, num_warmup=30,
+        num_chains=num_chains,
+    )
+    assert result["tau_samples"].shape == (num_samples, num_chains)
+    assert jnp.all(result["tau_samples"] > 0.0)
+    assert result["tau_mean"] > 0.0
+    assert result["w_samples"].shape == (num_samples, num_chains, 3)
+    assert jnp.allclose(jnp.sum(result["w_samples"], axis=-1), 1.0, atol=1e-5)
+    assert jnp.isfinite(result["waic"])
+
+
+def test_fit_tau_prior_with_vi_raises():
+    import pytest
+
+    key = jr.PRNGKey(13)
+    x_pool, z_pool = _make_pool(key, n=100, p=3)
+    with pytest.raises(NotImplementedError):
+        fit_bii(key, x_pool, z_pool, sig=0.1, tau_prior=(2.0, 2.0),
+                inference_method="vi", n_triplets=30)
