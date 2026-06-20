@@ -1,7 +1,10 @@
 """Posterior diagnostics: WAIC, R-hat, ESS, alignment — all pure functions."""
 
 import jax
+import numpy as np
 from jax import numpy as jnp
+from scipy.special import ndtri
+from scipy.stats import rankdata
 
 from bii.inference import delta_V_one_triplet, loglik_w_per_triplet
 
@@ -20,38 +23,101 @@ def compute_waic(w_samples_flat, T, Z, sig, noise_model="additive", link="probit
 
     return -2.0 * (lppd - p_waic)
 
+def _split_chains(x):
+    """Split each chain in half: (n, m) -> (n // 2, 2m)."""
+    n, m = x.shape
+    n2 = n // 2
+    return np.concatenate([x[:n2], x[n2:2 * n2]], axis=1)
+
+
+def _rank_normalize(x):
+    """Rank-normalise a (n, m) block to approximate normal scores (rankits)."""
+    flat = x.reshape(-1)
+    r = rankdata(flat)  # average ranks, 1..N
+    z = ndtri((r - 0.375) / (flat.size - 0.25))
+    return z.reshape(x.shape)
+
+
+def _autocov(x):
+    """Biased autocovariance of a 1-D series at lags 0..n-1 via FFT."""
+    n = x.shape[0]
+    x = x - x.mean()
+    nfft = 1
+    while nfft < 2 * n:
+        nfft *= 2
+    f = np.fft.rfft(x, nfft)
+    acov = np.fft.irfft(f * np.conjugate(f), nfft)[:n].real
+    return acov / n
+
+
 def compute_rhat(samples):
-    """Gelman-Rubin R-hat convergence diagnostic.
+    """Rank-normalised split-R-hat (Vehtari et al., 2021).
 
     Args:
         samples: (num_samples, num_chains, p).
 
     Returns:
-        R-hat values for each parameter (p,).
+        R-hat for each parameter (p,), as a numpy array.
     """
-    n, m, _ = samples.shape
-    chain_means = jnp.mean(samples, axis=0)
-    global_mean = jnp.mean(chain_means, axis=0)
-    B = n / (m - 1) * jnp.sum((chain_means - global_mean[None, :]) ** 2, axis=0)
-    W = jnp.mean(jnp.var(samples, axis=0, ddof=1), axis=0)
-    var_plus = ((n - 1) / n) * W + (1 / n) * B
-    return jnp.sqrt(var_plus / (W + 1e-10))
+    s = np.asarray(samples, dtype=np.float64)
+    _, _, p = s.shape
+    out = np.empty(p, dtype=np.float64)
+    for i in range(p):
+        z = _rank_normalize(_split_chains(s[:, :, i]))  # (n2, 2m)
+        n2, _ = z.shape
+        cmean = z.mean(axis=0)
+        W = z.var(axis=0, ddof=1).mean()
+        B = n2 * cmean.var(ddof=1)
+        var_plus = (n2 - 1) / n2 * W + B / n2
+        out[i] = float(np.sqrt(var_plus / W)) if W > 0 else np.nan
+    return out
 
 
 def compute_ess(samples):
-    """Effective sample size via lag-1 autocorrelation.
+    """Bulk effective sample size: rank-normalised, split-chain, multi-lag.
+
+    Uses Geyer's initial monotone positive sequence (the Stan/ArviZ estimator).
 
     Args:
         samples: (num_samples, num_chains, p).
 
     Returns:
-        ESS for each parameter (p,).
+        ESS for each parameter (p,), as a numpy array.
     """
-    n, m, p = samples.shape
-    total = n * m
-    flat = samples.reshape(-1, p)
-    acf1 = jnp.array([jnp.corrcoef(flat[:-1, i], flat[1:, i])[0, 1] for i in range(p)])
-    return total / (1 + 2 * jnp.maximum(acf1, 0))
+    s = np.asarray(samples, dtype=np.float64)
+    _, _, p = s.shape
+    out = np.empty(p, dtype=np.float64)
+    for i in range(p):
+        x = _rank_normalize(_split_chains(s[:, :, i]))  # (n2, M), M = 2m
+        n2, M = x.shape
+        N = n2 * M
+        acov = np.stack([_autocov(x[:, c]) for c in range(M)], axis=1)  # (n2, M)
+        chain_var = acov[0] * n2 / (n2 - 1)                  # unbiased within-chain var
+        W = chain_var.mean()
+        B = n2 * x.mean(axis=0).var(ddof=1) if M > 1 else 0.0
+        var_plus = (n2 - 1) / n2 * W + B / n2
+        if var_plus <= 0:
+            out[i] = float(N)
+            continue
+        rho = 1.0 - (W - acov.mean(axis=1)) / var_plus       # rho[0] == 1
+        rho[0] = 1.0
+        # Geyer initial positive sequence on consecutive pair sums.
+        pair_sums = []
+        k = 0
+        while 2 * k + 1 < n2:
+            pk = rho[2 * k] + rho[2 * k + 1]
+            if k > 0 and pk <= 0.0:
+                break
+            pair_sums.append(pk)
+            k += 1
+        pair_sums = np.array(pair_sums)
+        # Enforce the initial monotone (non-increasing) sequence.
+        for j in range(1, pair_sums.size):
+            if pair_sums[j] > pair_sums[j - 1]:
+                pair_sums[j] = pair_sums[j - 1]
+        tau = max(-1.0 + 2.0 * pair_sums.sum(), 1.0 / np.log10(max(N, 10)))
+        out[i] = N / tau
+    return out
 
 
 def weight_entropy(w_samples):

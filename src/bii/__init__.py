@@ -2,6 +2,7 @@
 
 from bii.data import (
     T_from_X,
+    kappa_from_triplets,
     make_triplets,
     make_triplets_random_sparse,
     make_triplets_rank_weighted,
@@ -26,6 +27,7 @@ from bii.sampling import run_nuts, run_vi, sample_vi
 __all__ = [
     "fit_bii",
     "T_from_X",
+    "kappa_from_triplets",
     "make_triplets",
     "make_triplets_random_sparse",
     "make_triplets_rank_weighted",

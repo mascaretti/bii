@@ -24,6 +24,27 @@ def T_from_X(X):
     return (di <= dj).astype(jnp.float32)
 
 
+def kappa_from_triplets(indices):
+    """Composite-likelihood temperature from the triplet overlap structure.
+
+    Triplets that share an anchor are correlated, so the product likelihood
+    over-counts information. The simplest calibration of the generalised-Bayes
+    learning rate is the fraction of distinct anchors,
+    ``kappa = n_unique_anchors / n_triplets`` (column 0 is the anchor), which
+    deflates the evidence to the effective number of independent comparisons.
+
+    Args:
+        indices: (n_triplets, 3) pool indices, column 0 the anchor.
+
+    Returns:
+        float ``kappa`` in ``(0, 1]``.
+    """
+    indices = jnp.asarray(indices)
+    n_triplets = indices.shape[0]
+    n_anchors = jnp.unique(indices[:, 0]).shape[0]
+    return float(n_anchors) / float(n_triplets)
+
+
 def make_triplets(key, X_pool, Z_pool, n_triplets, anchor_fraction=0.1):
     """Form triplets from paired observation pools.
 
