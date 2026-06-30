@@ -186,13 +186,13 @@ def loglik_w(w, T, Z, sig, noise_model="additive", triplet_weights=None, clip_s=
             the trust region — a censored-probit robustifier.
         pi_inclusion: optional float in (0, 1). When set, the per-triplet
             likelihood becomes a two-component mixture
-              ``P(T_t | w) = pi * Phi(±s_t) + (1 - pi) * 0.5``
-            equivalent to a latent inclusion variable
+            ``P(T_t | w) = pi * Phi(±s_t) + (1 - pi) * 0.5``, equivalent to a
+            latent inclusion variable
             ``m_t ~ Bernoulli(pi)`` marginalised out: with prob ``pi`` the
             triplet is "informative" (BII model), with prob ``1 - pi`` it
             is "noise" (uniform label). The posterior inclusion probability
-              ``P(m_t = 1 | T_t, w) = pi*P_t / (pi*P_t + (1-pi)*0.5)``
-            adapts to ``w`` automatically as NUTS samples, providing the
+            ``P(m_t = 1 | T_t, w) = pi*P_t / (pi*P_t + (1-pi)*0.5)`` adapts to
+            ``w`` automatically as NUTS samples, providing the
             "probabilistic triplet selection that evolves with w" version
             of the static [eps, 1-eps] filter without a new MCMC kernel.
             Default ``None`` recovers the plain probit likelihood.

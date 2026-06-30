@@ -27,6 +27,12 @@ dev = [
   "ruff>=0.6",
   "mypy>=1.11",
 ]
+docs = [
+  "sphinx>=7",
+  "furo",
+  "myst-parser>=2",
+  "sphinx-autodoc-typehints",
+]
 
 [tool.ruff]
 line-length = 100

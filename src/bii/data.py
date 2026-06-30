@@ -104,8 +104,8 @@ def make_triplets_zfar(key, X_pool, Z_pool, sig, n_triplets, anchor_fraction=0.1
     """Form triplets with (i, j) at fixed Z-distance ranks from each anchor.
 
     For each anchor k, sort destinations by Mahalanobis Z-distance
-        ``d2(l, k) = sum_d (z_{l,d} - z_{k,d})^2 / sigma_d^2``
-    ascending, then pick (i, j) at sliding ranks ``(rank_i + t, rank_j + t)`` for
+    ``d2(l, k) = sum_d (z_{l,d} - z_{k,d})^2 / sigma_d^2`` ascending, then pick
+    (i, j) at sliding ranks ``(rank_i + t, rank_j + t)`` for
     ``t = 0..n_triplets - 1``. Labels are still computed from X-distance (Y).
 
     Motivation: under flat ``sigma`` on heavy-tailed data (e.g. NHANES nutrients
@@ -500,8 +500,10 @@ def make_triplets_z_softmax(
     """DII-kernel-shaped Z sampler: pair (i, j) ~ softmax_l(-d_Z(l, k) / lambda).
 
     For each anchor k:
+
       i ~ Categorical(softmax(-d2_Z(., k) / lambda_close))
       j ~ Categorical(softmax(-d2_Z(., k) / lambda_far))
+
     independently. Labels follow from :func:`T_from_X` (X-distance ordering).
 
     The two lambdas implement DII's "softmax over rank-distance" structure: i

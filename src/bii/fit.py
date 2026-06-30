@@ -75,10 +75,10 @@ def fit_bii(
         triplet_sampler: callable, default ``bii.data.make_triplets`` (ignores
             ``sig``). Signature
             ``(key, X_pool, Z_pool, sig, n_triplets, anchor_fraction) -> ...``.
-            Two return protocols are supported:
-              * 4-tuple ``(T, X, Z, indices)`` — unweighted loglik.
-              * 5-tuple ``(T, X, Z, indices, weights)`` — ``weights`` are
-                forwarded to the loglik as per-triplet importance weights.
+            Two return protocols are supported: a 4-tuple
+            ``(T, X, Z, indices)`` (unweighted loglik), or a 5-tuple
+            ``(T, X, Z, indices, weights)`` where ``weights`` are forwarded to
+            the loglik as per-triplet importance weights.
             Pass e.g. ``functools.partial(make_triplets_zfar, rank_i=10, rank_j=25)``
             for the Z-far sampler, or ``make_triplets_rank_weighted`` for the
             importance-weighted rank-pair sampler.
