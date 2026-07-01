@@ -22,7 +22,7 @@ from bii.diagnostics import (
 )
 from bii.fit import fit_bii
 from bii.priors import make_dirichlet_logposterior
-from bii.sampling import run_nuts, run_vi, sample_vi
+from bii.sampling import run_map, run_nuts, run_vi, sample_vi
 
 __all__ = [
     "fit_bii",
@@ -39,6 +39,7 @@ __all__ = [
     "make_dirichlet_logposterior",
     "run_nuts",
     "run_vi",
+    "run_map",
     "sample_vi",
     "compute_waic",
     "compute_rhat",

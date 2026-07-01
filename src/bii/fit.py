@@ -15,7 +15,7 @@ from bii.diagnostics import (
     weight_entropy,
 )
 from bii.priors import make_dirichlet_logposterior
-from bii.sampling import run_nuts, run_vi, sample_vi
+from bii.sampling import run_map, run_nuts, run_vi, sample_vi
 
 
 def fit_bii(
@@ -56,6 +56,10 @@ def fit_bii(
     vi_lr=1e-2,
     vi_elbo_samples=8,
     vi_num_samples=2000,
+    # MAP params
+    map_steps=3000,
+    map_lr=1e-2,
+    map_restarts=1,
     # Options
     compute_waic_flag=True,
 ):
@@ -123,7 +127,11 @@ def fit_bii(
             shape ``(num_samples, num_chains)`` and ``tau_mean``.
             Mutually exclusive with ``pi_prior``; composes with a fixed
             ``pi_inclusion``, ``clip_s`` and ``link``.
-        inference_method: ``"nuts"`` or ``"vi"``.
+        inference_method: ``"nuts"`` (full posterior), ``"vi"`` (mean-field
+            approximation), or ``"map"`` (posterior mode only — a fast point
+            estimate that scales to large ``p``; no uncertainty). Under
+            ``"map"`` the result carries a single "draw": ``w_samples`` has
+            shape ``(1, 1, p)`` and ``diagnostics`` holds ``logprob_history``.
         num_samples: posterior draws per chain (NUTS).
         num_warmup: NUTS warmup steps.
         num_chains: number of MCMC chains.
@@ -133,6 +141,9 @@ def fit_bii(
         vi_lr: Adam learning rate for VI.
         vi_elbo_samples: MC samples per ELBO estimate.
         vi_num_samples: samples drawn from fitted variational posterior.
+        map_steps: Adam iterations for the MAP optimisation.
+        map_lr: Adam learning rate for MAP.
+        map_restarts: random-init restarts for MAP; the best mode is kept.
 
     Returns:
         dict with keys ``w_samples``, ``raw_samples``, ``T``, ``Z``,
@@ -234,11 +245,9 @@ def fit_bii(
         raw_samples = position_samples[:, None, :]
         theta_samples = position_samples[:, :p]
         w_samples = jax.vmap(jax.nn.softmax)(theta_samples)[:, None, :]
-        if pi_prior is not None:
-            # (vi_num_samples, 1) — single "chain", matching the NUTS layout
-            pi_samples = jax.nn.sigmoid(position_samples[:, p:])
-        else:
-            pi_samples = None
+        # (vi_num_samples, 1) — single "chain", matching the NUTS layout
+        pi_samples = (jax.nn.sigmoid(position_samples[:, p:])
+                      if pi_prior is not None else None)
         tau_samples = None
 
         diagnostics = {
@@ -247,6 +256,35 @@ def fit_bii(
             "mu": mu,
             "log_sigma": log_sigma,
         }
+
+    elif inference_method == "map":
+        # Fast point estimate: the posterior mode, no uncertainty. Scales to
+        # large p where NUTS is expensive. Returned as a single "draw" so the
+        # downstream (w_samples shape, alignment) is unchanged.
+        key, key_map = random.split(key)
+        map_position, logprob_history = run_map(
+            key_map, logprob_fn, position_dim,
+            num_steps=map_steps, lr=map_lr, n_restarts=map_restarts,
+        )
+        raw_samples = map_position[None, None, :]            # (1, 1, dim)
+        theta_samples = map_position[None, :p]               # (1, p)
+        w_samples = jax.nn.softmax(theta_samples)[:, None, :]  # (1, 1, p)
+        if pi_prior is not None:
+            pi_samples = jax.nn.sigmoid(map_position[None, p:])
+            tau_samples = None
+        elif tau_prior is not None:
+            tau_samples = jnp.exp(map_position[None, p:])
+            pi_samples = None
+        else:
+            pi_samples = None
+            tau_samples = None
+
+        diagnostics = {
+            "logprob_history": logprob_history,
+            "final_logprob": logprob_history[-1],
+            "map_position": map_position,
+        }
+
     else:
         raise ValueError(f"Unknown inference_method: {inference_method!r}")
 

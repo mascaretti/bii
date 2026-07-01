@@ -52,9 +52,12 @@ See {func}`bii.kappa_from_triplets`.
 
 ## Inference
 
-- **NUTS** (default): {func}`bii.run_nuts`, multi-chain, with warmup adaptation.
+- **NUTS** (default): {func}`bii.run_nuts`, multi-chain, with warmup adaptation —
+  the full posterior, for calibrated uncertainty.
 - **Variational inference**: {func}`bii.run_vi` / {func}`bii.sample_vi`, a fast
-  mean-field approximation.
+  mean-field approximation (tends to under-estimate uncertainty).
+- **MAP**: {func}`bii.run_map`, the posterior mode by gradient ascent — a fast
+  point estimate with no uncertainty, for exploration at large $p$.
 
 {func}`bii.fit_bii` wires triplets → log-posterior → sampler → diagnostics and
 returns posterior draws plus R-hat, ESS, WAIC, and alignment scores.
