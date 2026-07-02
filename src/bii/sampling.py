@@ -133,6 +133,53 @@ def run_vi(key, logprob_fn, dim, num_steps=5000, lr=1e-2, num_elbo_samples=8):
     return params["mu"], params["log_sigma"], -neg_elbo_history
 
 
+def run_map(key, logprob_fn, dim, num_steps=3000, lr=1e-2, n_restarts=1,
+            init_scale=0.5):
+    """Find the MAP (posterior mode) by gradient ascent on the log-posterior.
+
+    A fast point estimate: one optimisation instead of sampling, so it scales to
+    large ``dim`` where NUTS is expensive. Adam ascends ``logprob_fn`` in the
+    unconstrained space, with optional random restarts (the highest-logprob mode
+    wins). This is the mode of the softmax-reparameterised posterior — the
+    Dirichlet Jacobian is included — so it is consistent with the NUTS/VI
+    parameterisation, and it does *not* quantify uncertainty (use NUTS for that).
+
+    Args:
+        key: JAX random key (seeds the restart inits).
+        logprob_fn: callable ``position -> scalar`` log-posterior.
+        dim: dimension of ``position``.
+        num_steps: Adam iterations per restart.
+        lr: Adam learning rate.
+        n_restarts: number of random-init restarts; the best mode is returned.
+            Restart 0 always starts at the origin (uniform ``w``).
+        init_scale: std of the Gaussian restart inits (restarts 1..).
+
+    Returns:
+        ``(map_position, logprob_history)``
+            map_position: (dim,) the best mode found.
+            logprob_history: (num_steps,) log-posterior of the best restart.
+    """
+    def optimise(init):
+        optimizer = optax.adam(lr)
+        opt_state = optimizer.init(init)
+
+        def step(carry, _):
+            pos, opt_state = carry
+            neg_val, grad = jax.value_and_grad(lambda z: -logprob_fn(z))(pos)
+            updates, opt_state = optimizer.update(grad, opt_state, pos)
+            pos = optax.apply_updates(pos, updates)
+            return (pos, opt_state), -neg_val
+
+        (pos, _), hist = jax.lax.scan(step, (init, opt_state), None, length=num_steps)
+        return pos, hist
+
+    inits = init_scale * random.normal(key, (n_restarts, dim))
+    inits = inits.at[0].set(jnp.zeros(dim))          # restart 0 = uniform w
+    positions, histories = jax.vmap(optimise)(inits)
+    best = jnp.argmax(histories[:, -1])
+    return positions[best], histories[best]
+
+
 def sample_vi(key, mu, log_sigma, num_samples):
     """Draw samples from a fitted mean-field Gaussian posterior.
 
