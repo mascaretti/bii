@@ -2,6 +2,18 @@
 
 Bayesian estimation of metric weights from triplet comparisons using MCMC (NUTS) and mean-field variational inference.
 
+[![Documentation Status](https://readthedocs.org/projects/bii/badge/?version=latest)](https://bii.readthedocs.io/en/latest/?badge=latest)
+
+## Documentation
+
+Full documentation (guide + API reference) lives in `docs/` and is published with
+[Read the Docs](https://readthedocs.org). Build it locally:
+
+```bash
+pip install -e ".[docs]"
+sphinx-build -b html docs docs/_build/html
+```
+
 ## Installation
 
 ```bash

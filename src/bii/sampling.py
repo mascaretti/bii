@@ -40,10 +40,10 @@ def run_nuts(
     """
     dim = init_position.shape[0]
 
-    key, *init_keys = random.split(key, num_chains + 1)
-    init_positions = jnp.stack([
-        init_position + 0.1 * random.normal(k, shape=(dim,)) for k in init_keys
-    ])
+    key, key_init, key_chains = random.split(key, 3)
+    init_positions = init_position[None, :] + 0.1 * random.normal(
+        key_init, shape=(num_chains, dim)
+    )
 
     warmup = blackjax.window_adaptation(
         blackjax.nuts,
@@ -53,32 +53,27 @@ def run_nuts(
         initial_step_size=step_size,
     )
 
-    keys_warmup = random.split(key, num_chains)
-
-    all_samples = []
-    all_acceptance = []
-
-    def _make_step_fn(kernel):
-        def one_step(state, key):
-            new_state, info = kernel.step(key, state)
-            return new_state, (new_state.position, info.acceptance_rate)
-
-        return one_step
-
-    for chain_idx in range(num_chains):
-        (state, params), _ = warmup.run(keys_warmup[chain_idx], init_positions[chain_idx])
+    def run_one_chain(chain_key, init_pos):
+        """Warm up and sample one chain; vmapped over chains below."""
+        key_warm, key_sample = random.split(chain_key)
+        (state, params), _ = warmup.run(key_warm, init_pos)
         kernel = blackjax.nuts(logprob_fn, **params)
-        one_step = _make_step_fn(kernel)
 
-        key, subkey = random.split(key)
-        sample_keys = random.split(subkey, num_samples)
-        _, (samples_chain, acc_chain) = jax.lax.scan(one_step, state, sample_keys)
+        def one_step(st, k):
+            new_st, info = kernel.step(k, st)
+            return new_st, (new_st.position, info.acceptance_rate)
 
-        all_samples.append(samples_chain)
-        all_acceptance.append(acc_chain)
+        sample_keys = random.split(key_sample, num_samples)
+        _, (positions, acc) = jax.lax.scan(one_step, state, sample_keys)
+        return positions, acc  # (num_samples, dim), (num_samples,)
 
-    raw_samples = jnp.stack(all_samples, axis=1)
-    acceptance_rates = jnp.stack(all_acceptance, axis=1)
+    # Chains run in parallel via vmap (vectorised over the GPU).
+    chain_keys = random.split(key_chains, num_chains)
+    positions, acceptance = jax.vmap(run_one_chain)(chain_keys, init_positions)
+
+    # vmap stacks chains on axis 0; transpose to (num_samples, num_chains, ...).
+    raw_samples = jnp.swapaxes(positions, 0, 1)
+    acceptance_rates = jnp.swapaxes(acceptance, 0, 1)
     return raw_samples, acceptance_rates
 
 

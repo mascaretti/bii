@@ -1,0 +1,8 @@
+# Documentation build dependencies (Read the Docs / local sphinx-build).
+# JAX, blackjax and optax are NOT needed: conf.py mocks them for autodoc.
+sphinx>=7
+furo
+myst-parser>=2
+sphinx-autodoc-typehints
+numpy
+scipy

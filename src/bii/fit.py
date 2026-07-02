@@ -75,10 +75,10 @@ def fit_bii(
         triplet_sampler: callable, default ``bii.data.make_triplets`` (ignores
             ``sig``). Signature
             ``(key, X_pool, Z_pool, sig, n_triplets, anchor_fraction) -> ...``.
-            Two return protocols are supported:
-              * 4-tuple ``(T, X, Z, indices)`` — unweighted loglik.
-              * 5-tuple ``(T, X, Z, indices, weights)`` — ``weights`` are
-                forwarded to the loglik as per-triplet importance weights.
+            Two return protocols are supported: a 4-tuple
+            ``(T, X, Z, indices)`` (unweighted loglik), or a 5-tuple
+            ``(T, X, Z, indices, weights)`` where ``weights`` are forwarded to
+            the loglik as per-triplet importance weights.
             Pass e.g. ``functools.partial(make_triplets_zfar, rank_i=10, rank_j=25)``
             for the Z-far sampler, or ``make_triplets_rank_weighted`` for the
             importance-weighted rank-pair sampler.
@@ -109,7 +109,8 @@ def fit_bii(
             ``Beta(a, b)`` prior on ``pi`` and sample it jointly with
             ``theta``. When given, ``pi_inclusion`` is ignored and the
             result dict includes a new field ``pi_samples`` of shape
-            ``(num_samples, num_chains)`` plus a posterior-mean
+            ``(num_samples, num_chains)`` under NUTS or
+            ``(vi_num_samples, 1)`` under VI, plus a posterior-mean
             ``pi_mean``. Use ``Beta(2, 2)`` for a weakly informative
             default that keeps mass away from 0 and 1.
         tau_prior: optional ``(a, b)`` Gamma hyperparameters that put a
@@ -218,21 +219,26 @@ def fit_bii(
             diagnostics["ess"] = compute_ess(w_samples)
 
     elif inference_method == "vi":
-        if pi_prior is not None or tau_prior is not None:
+        if tau_prior is not None:
             raise NotImplementedError(
-                "VI with a learned pi or tau is not yet supported; use NUTS."
+                "VI with a learned tau is not yet supported; use NUTS."
             )
         key, key_vi, key_sample = random.split(key, 3)
 
         mu, log_sigma, elbo_history = run_vi(
-            key_vi, logprob_fn, p,
+            key_vi, logprob_fn, position_dim,
             num_steps=vi_steps, lr=vi_lr, num_elbo_samples=vi_elbo_samples,
         )
-        theta_samples, w_flat_vi = sample_vi(key_sample, mu, log_sigma, vi_num_samples)
+        position_samples, _ = sample_vi(key_sample, mu, log_sigma, vi_num_samples)
 
-        raw_samples = theta_samples[:, None, :]
-        w_samples = w_flat_vi[:, None, :]
-        pi_samples = None
+        raw_samples = position_samples[:, None, :]
+        theta_samples = position_samples[:, :p]
+        w_samples = jax.vmap(jax.nn.softmax)(theta_samples)[:, None, :]
+        if pi_prior is not None:
+            # (vi_num_samples, 1) — single "chain", matching the NUTS layout
+            pi_samples = jax.nn.sigmoid(position_samples[:, p:])
+        else:
+            pi_samples = None
         tau_samples = None
 
         diagnostics = {

@@ -142,16 +142,25 @@ def test_fit_with_pi_prior():
     assert result["inclusion_probs"] is not None
 
 
-def test_fit_pi_prior_with_vi_raises():
-    import pytest
-
+def test_fit_pi_prior_with_vi():
+    """Learned pi under VI: position grows by one, pi reported per draw."""
     key = jr.PRNGKey(7)
     x_pool, z_pool = _make_pool(key, n=100, p=3)
-    with pytest.raises(NotImplementedError):
-        fit_bii(
-            key, x_pool, z_pool, sig=0.1, pi_prior=(2.0, 2.0),
-            inference_method="vi", n_triplets=30,
-        )
+    vi_num_samples = 100
+    result = fit_bii(
+        key, x_pool, z_pool, sig=0.1, pi_prior=(2.0, 2.0),
+        inference_method="vi", n_triplets=30,
+        vi_steps=200, vi_num_samples=vi_num_samples,
+    )
+    assert result["pi_samples"].shape == (vi_num_samples, 1)
+    assert jnp.all(result["pi_samples"] > 0.0)
+    assert jnp.all(result["pi_samples"] < 1.0)
+    assert 0.0 < result["pi_mean"] < 1.0
+    # raw position carries logit_pi; w stays p-dimensional on the simplex
+    assert result["raw_samples"].shape == (vi_num_samples, 1, 4)
+    assert result["w_samples"].shape == (vi_num_samples, 1, 3)
+    assert jnp.allclose(jnp.sum(result["w_samples"], axis=-1), 1.0, atol=1e-5)
+    assert result["inclusion_probs"] is not None
 
 
 def test_fit_unknown_inference_method_raises():
