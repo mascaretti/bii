@@ -43,6 +43,9 @@ def fit_bii(
     # Optional Gamma(a, b) prior on an extra relation-noise std tau
     # (V -> V + tau^2; sampled jointly; mutually exclusive with pi_prior)
     tau_prior=None,
+    # Optional grid of calibrated slopes (s -> lam * s), integrated out;
+    # mutually exclusive with pi_prior and tau_prior
+    slope_grid=None,
     # Inference method
     inference_method="nuts",
     # NUTS params
@@ -127,6 +130,20 @@ def fit_bii(
             shape ``(num_samples, num_chains)`` and ``tau_mean``.
             Mutually exclusive with ``pi_prior``; composes with a fixed
             ``pi_inclusion``, ``clip_s`` and ``link``.
+        slope_grid: optional (R,) array of positive calibrated slopes, e.g.
+            :func:`bii.priors.make_slope_grid`. Integrates a calibration
+            slope out of the likelihood (``s -> lam * s``; see
+            :func:`bii.priors.make_dirichlet_logposterior`), so that weak
+            signal widens the posterior instead of collapsing it onto the
+            coordinate with the lowest spread-to-noise ratio. The position
+            stays ``theta``. The result dict gains ``slope_posterior``, the
+            posterior over the grid averaged over draws, and
+            ``slope_mean``, the posterior mean of ``lam``: near 0 without
+            signal, near 1 when the noise model explains the disagreements.
+            WAIC, the alignment index and the inclusion probabilities are
+            scored at ``lam = slope_mean``. Mutually exclusive with
+            ``pi_prior`` and ``tau_prior``; composes with a fixed
+            ``pi_inclusion``, ``clip_s`` and ``link``.
         inference_method: ``"nuts"`` (full posterior), ``"vi"`` (mean-field
             approximation), or ``"map"`` (posterior mode only — a fast point
             estimate that scales to large ``p``; no uncertainty). Under
@@ -188,12 +205,13 @@ def fit_bii(
         )
 
     # Step 2 — build log-posterior. With pi_prior or tau_prior, the position
-    # vector grows by one entry (logit_pi / log_tau at the end).
+    # vector grows by one entry (logit_pi / log_tau at the end); a slope_grid
+    # is integrated out and leaves the position unchanged.
     logprob_fn = make_dirichlet_logposterior(
         T, Z, sig_resolved, alpha, kappa, noise_model,
         triplet_weights=triplet_weights, clip_s=clip_s,
         pi_inclusion=pi_inclusion, pi_prior=pi_prior, link=link,
-        tau_prior=tau_prior,
+        tau_prior=tau_prior, slope_grid=slope_grid,
     )
     position_dim = p + 1 if (pi_prior is not None or tau_prior is not None) else p
     init_position = jnp.zeros(position_dim)
@@ -289,12 +307,38 @@ def fit_bii(
         raise ValueError(f"Unknown inference_method: {inference_method!r}")
 
     # WAIC (optional — can OOM with large triplet sets + many samples).
-    # With a learned tau, score at the posterior-mean tau^2.
+    # With a learned tau, score at the posterior-mean tau^2; with a slope
+    # grid, at the posterior-mean slope.
     w_flat = w_samples.reshape(-1, p)
     tau_mean = float(jnp.mean(tau_samples)) if tau_samples is not None else None
     tau2_eval = float(jnp.mean(tau_samples**2)) if tau_samples is not None else 0.0
+
+    # Posterior of the calibrated slope: per draw over the grid, averaged.
+    # lax.map keeps memory at one (R, n) block per draw.
+    slope_post = None
+    slope_mean = None
+    if slope_grid is not None:
+        from bii.inference import slope_posterior as _slope_posterior
+        from bii.inference import slope_scale as _slope_scale
+        grid = jnp.asarray(slope_grid)
+        sub = w_flat[:: max(1, w_flat.shape[0] // 512)]
+
+        def _slope_one(w_):
+            post_ = _slope_posterior(w_, T, Z, sig_resolved, grid, kappa=kappa,
+                                     noise_model=noise_model,
+                                     triplet_weights=triplet_weights, clip_s=clip_s,
+                                     pi_inclusion=pi_inclusion, link=link)
+            scale_ = _slope_scale(w_, Z, sig_resolved, noise_model,
+                                  triplet_weights=triplet_weights)
+            return post_, jnp.sum(post_ * grid) / scale_
+
+        posts, lams = jax.lax.map(_slope_one, sub)
+        slope_post = jnp.mean(posts, axis=0)
+        slope_mean = float(jnp.mean(lams))
+    lam_eval = slope_mean if slope_mean is not None else 1.0
+
     waic = (compute_waic(w_flat, T, Z, sig_resolved, noise_model, link=link,
-                         tau2=tau2_eval)
+                         tau2=tau2_eval, lam=lam_eval)
             if compute_waic_flag else None)
 
     # Posterior-mean inclusion probability per triplet (only meaningful when
@@ -310,16 +354,16 @@ def fit_bii(
         sub = w_flat[:: max(1, w_flat.shape[0] // 512)]
         per_draw = jax.vmap(
             lambda w_: _inclusion_probs(w_, T, Z, sig_resolved, pi_for_incl,
-                                        noise_model, clip_s, link=link)
+                                        noise_model, clip_s, link=link, lam=lam_eval)
         )(sub)
         incl_probs = jnp.mean(per_draw, axis=0)
 
-    # Alignment measures (scored at the posterior-mean tau^2 when learned)
+    # Alignment measures (scored at the posterior-mean tau^2 or slope when learned)
     from bii.diagnostics import alignment_index as _alignment_index
     entropy_scores = weight_entropy(w_flat)
     accuracy_scores = triplet_accuracy(w_flat, T, Z, sig_resolved, noise_model)
     alignment_idx = _alignment_index(w_flat, T, Z, sig_resolved, noise_model,
-                                     link=link, tau2=tau2_eval)
+                                     link=link, tau2=tau2_eval, lam=lam_eval)
 
     elapsed = time.perf_counter() - t0
 
@@ -338,6 +382,9 @@ def fit_bii(
         "tau_prior": tau_prior,
         "tau_samples": tau_samples,
         "tau_mean": tau_mean,
+        "slope_grid": slope_grid,
+        "slope_posterior": slope_post,
+        "slope_mean": slope_mean,
         "kappa": kappa,
         "waic": waic,
         "alignment": {

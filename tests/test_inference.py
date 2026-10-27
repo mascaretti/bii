@@ -493,3 +493,78 @@ def test_tau2_gradient_finite():
     w = jnp.ones(3) / 3
     g = jax.grad(loglik_w)(w, T, Z, sig=0.1, tau2=0.5)
     assert jnp.all(jnp.isfinite(g))
+
+
+# --- lam (calibration slope) and the calibrated-slope grid ---
+
+def test_lam_one_recovers_plain():
+    key = jr.PRNGKey(30)
+    T, Z = _make_simple_data(key, n=30, p=3)
+    w = jnp.ones(3) / 3
+    assert jnp.allclose(loglik_w(w, T, Z, sig=0.1),
+                        loglik_w(w, T, Z, sig=0.1, lam=1.0), atol=1e-6)
+
+
+def test_lam_is_variance_inflation():
+    """lam * s equals the statistic with V inflated by 1 / lam^2."""
+    from bii.inference import logP_log1mP_from_deltaV
+
+    delta = jnp.linspace(-3.0, 3.0, 13)
+    V = jnp.full_like(delta, 0.7)
+    lam = 0.4
+    lp_lam, l1mp_lam = logP_log1mP_from_deltaV(delta, V, lam=lam)
+    lp_var, l1mp_var = logP_log1mP_from_deltaV(delta, V / lam**2)
+    assert jnp.allclose(lp_lam, lp_var, atol=1e-5)
+    assert jnp.allclose(l1mp_lam, l1mp_var, atol=1e-5)
+
+
+def test_lam_to_zero_is_coin_flip():
+    """A vanishing slope makes every triplet a coin flip."""
+    key = jr.PRNGKey(31)
+    T, Z = _make_simple_data(key, n=30, p=3)
+    w = jnp.ones(3) / 3
+    ll = loglik_w(w, T, Z, sig=0.1, lam=1e-6)
+    assert jnp.allclose(ll, T.shape[0] * jnp.log(0.5), atol=0.05)
+
+
+def test_lam_gradient_finite():
+    key = jr.PRNGKey(32)
+    T, Z = _make_simple_data(key, n=30, p=3)
+    w = jnp.ones(3) / 3
+    g = jax.grad(loglik_w)(w, T, Z, sig=0.1, lam=0.3)
+    assert jnp.all(jnp.isfinite(g))
+
+
+def test_slope_scale_is_scale_invariant():
+    """Rescaling the source and its noise together leaves rms_t s_t unchanged."""
+    from bii.inference import slope_scale
+
+    key = jr.PRNGKey(33)
+    _, Z = _make_simple_data(key, n=30, p=3)
+    w = jnp.array([0.5, 0.3, 0.2])
+    assert jnp.allclose(slope_scale(w, Z, 0.1), slope_scale(w, 3.0 * Z, 0.3), rtol=1e-4)
+
+
+def test_slope_grid_at_own_scale_recovers_plain():
+    """The calibrated slope slope_scale(w) is lam = 1, the plain likelihood."""
+    from bii.inference import loglik_w_slope_grid, slope_scale
+
+    key = jr.PRNGKey(34)
+    T, Z = _make_simple_data(key, n=30, p=3)
+    w = jnp.array([0.5, 0.3, 0.2])
+    grid = jnp.array([slope_scale(w, Z, 0.1)])
+    ll = loglik_w_slope_grid(w, T, Z, 0.1, grid)
+    assert ll.shape == (1,)
+    assert jnp.allclose(ll[0], loglik_w(w, T, Z, sig=0.1), rtol=1e-5)
+
+
+def test_slope_posterior_is_a_distribution():
+    from bii.inference import slope_posterior
+    from bii.priors import make_slope_grid
+
+    key = jr.PRNGKey(35)
+    T, Z = _make_simple_data(key, n=30, p=3)
+    post = slope_posterior(jnp.ones(3) / 3, T, Z, 0.1, make_slope_grid(num=11))
+    assert post.shape == (11,)
+    assert jnp.all(post >= 0.0)
+    assert jnp.allclose(jnp.sum(post), 1.0, atol=1e-5)

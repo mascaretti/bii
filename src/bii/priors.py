@@ -119,3 +119,29 @@ def make_dirichlet_logposterior(T, Z, sig, alpha, kappa=1.0, noise_model="additi
                 + log_pi_prior)
 
     return logprob_fn_with_pi
+
+
+def make_betaprime_logposterior(T, Z, sig, a, b, kappa=1.0, noise_model="additive",
+                                triplet_weights=None, clip_s=None,
+                                pi_inclusion=None, link="probit"):
+    """Return ``logprob_fn(theta) -> scalar`` with a Beta-prime prior.
+
+    Weights are ``w = softmax(theta)``, i.e. ``w_i = x_i / sum_j x_j`` with
+    ``x_i = exp(theta_i) ~ BetaPrime(a, b)`` i.i.d. The log-transform Jacobian
+    is absorbed, so the prior on ``theta_i`` has log-density
+    ``a * theta_i - (a + b) * softplus(theta_i)`` (up to a constant).
+
+    Args:
+        a, b: Beta-prime shape parameters; scalars or ``(p,)`` arrays.
+        Other arguments: as in :func:`make_dirichlet_logposterior`. The learned
+            nuisance options ``pi_prior`` and ``tau_prior`` are not supported.
+    """
+    def logprob_fn(theta):
+        w = jax.nn.softmax(theta)
+        ll = loglik_w(w, T, Z, sig, noise_model,
+                      triplet_weights=triplet_weights, clip_s=clip_s,
+                      pi_inclusion=pi_inclusion, link=link)
+        log_prior = jnp.sum(a * theta - (a + b) * jax.nn.softplus(theta))
+        return kappa * ll + log_prior
+
+    return logprob_fn

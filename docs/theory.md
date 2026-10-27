@@ -70,6 +70,14 @@ returns posterior draws plus R-hat, ESS, WAIC, and alignment scores.
   triplet be "off-model" with probability that evolves with $w$.
 - `tau_prior` — an extra relation-noise std $\tau$ ($V \to V + \tau^2$) sampled
   jointly.
+- `slope_grid` — a calibration slope $\lambda$ on the standardised gap
+  ($s \to \lambda s$), integrated out on a grid of calibrated slopes
+  ({func}`bii.make_slope_grid`). Under weak signal the plain likelihood can only
+  lower its confidence by turning $w$ toward the coordinate with the lowest
+  spread-to-noise ratio, so the posterior collapses there; the slope gives
+  confidence a knob of its own, and the posterior widens instead. The fit
+  reports `slope_mean`: near 0 without signal, near 1 when the noise model
+  explains the disagreements.
 
 ## Reference
 

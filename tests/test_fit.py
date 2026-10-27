@@ -246,3 +246,36 @@ def test_fit_tau_prior_with_vi_raises():
     with pytest.raises(NotImplementedError):
         fit_bii(key, x_pool, z_pool, sig=0.1, tau_prior=(2.0, 2.0),
                 inference_method="vi", n_triplets=30)
+
+
+def test_fit_with_slope_grid():
+    """Calibration slope integrated on a grid: theta-only position, slope reported."""
+    from bii.priors import make_slope_grid
+
+    key = jr.PRNGKey(14)
+    x_pool, z_pool = _make_pool(key, n=100, p=3)
+    grid = make_slope_grid(num=11)
+    num_samples, num_chains = 30, 2
+    result = fit_bii(
+        key, x_pool, z_pool, sig=0.1, slope_grid=grid,
+        n_triplets=30, num_samples=num_samples, num_warmup=30,
+        num_chains=num_chains,
+    )
+    assert result["raw_samples"].shape == (num_samples, num_chains, 3)
+    assert result["slope_posterior"].shape == (11,)
+    assert jnp.allclose(jnp.sum(result["slope_posterior"]), 1.0, atol=1e-4)
+    assert result["slope_mean"] > 0.0
+    assert jnp.allclose(jnp.sum(result["w_samples"], axis=-1), 1.0, atol=1e-5)
+
+
+def test_fit_slope_grid_with_pi_prior_raises():
+    import pytest
+
+    from bii.priors import make_slope_grid
+
+    key = jr.PRNGKey(15)
+    x_pool, z_pool = _make_pool(key, n=60, p=3)
+    with pytest.raises(NotImplementedError):
+        fit_bii(key, x_pool, z_pool, sig=0.1, slope_grid=make_slope_grid(num=5),
+                pi_prior=(2.0, 2.0), n_triplets=10, num_samples=5, num_warmup=5,
+                num_chains=1)

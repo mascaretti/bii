@@ -184,3 +184,70 @@ def test_tau_prior_with_pi_prior_raises():
             T, Z, sig=0.1, alpha=jnp.ones(3),
             pi_prior=(2.0, 2.0), tau_prior=(2.0, 2.0),
         )
+
+
+# --- slope_grid: calibration slope integrated on a grid ---
+
+def test_make_slope_grid_log_spaced():
+    from bii.priors import make_slope_grid
+
+    grid = make_slope_grid(0.01, 10.0, num=31)
+    assert grid.shape == (31,)
+    assert jnp.allclose(grid[0], 0.01, rtol=1e-5)
+    assert jnp.allclose(grid[-1], 10.0, rtol=1e-5)
+    ratios = grid[1:] / grid[:-1]
+    assert jnp.allclose(ratios, ratios[0], rtol=1e-4)
+
+
+def test_slope_grid_logposterior_matches_logsumexp():
+    """The slope is integrated inside the kappa tempering, with uniform weights."""
+    from jax.scipy.special import logsumexp
+
+    from bii.inference import loglik_w_slope_grid
+    from bii.priors import make_slope_grid
+
+    T, Z = _make_data(jr.PRNGKey(20), p=4)
+    grid = make_slope_grid(num=7)
+    kappa = 0.5
+    logprob_fn = make_dirichlet_logposterior(T, Z, sig=0.1, alpha=jnp.ones(4),
+                                             kappa=kappa, slope_grid=grid)
+    theta = jnp.array([0.3, -0.2, 0.1, 0.0])
+    w = jax.nn.softmax(theta)
+    ll = loglik_w_slope_grid(w, T, Z, 0.1, grid)
+    expected = logsumexp(kappa * ll) - jnp.log(7.0) + jnp.sum(jnp.log(w + 1e-12))
+    assert jnp.allclose(logprob_fn(theta), expected, rtol=1e-5)
+
+
+def test_slope_grid_position_is_theta_and_gradient_finite():
+    from bii.priors import make_slope_grid
+
+    T, Z = _make_data(jr.PRNGKey(21), p=3)
+    logprob_fn = make_dirichlet_logposterior(
+        T, Z, sig=0.1, alpha=jnp.ones(3), slope_grid=make_slope_grid(num=11)
+    )
+    lp = logprob_fn(jnp.zeros(3))
+    g = jax.grad(logprob_fn)(jnp.array([0.2, -0.1, 0.0]))
+    assert lp.shape == ()
+    assert jnp.isfinite(lp)
+    assert g.shape == (3,)
+    assert jnp.all(jnp.isfinite(g))
+
+
+def test_slope_grid_with_pi_or_tau_prior_raises():
+    import pytest
+
+    T, Z = _make_data(jr.PRNGKey(22), p=3)
+    grid = jnp.array([0.5, 1.0])
+    for extra in ({"pi_prior": (2.0, 2.0)}, {"tau_prior": (2.0, 2.0)}):
+        with pytest.raises(NotImplementedError):
+            make_dirichlet_logposterior(T, Z, sig=0.1, alpha=jnp.ones(3),
+                                        slope_grid=grid, **extra)
+
+
+def test_slope_grid_rejects_nonpositive():
+    import pytest
+
+    T, Z = _make_data(jr.PRNGKey(23), p=3)
+    with pytest.raises(ValueError):
+        make_dirichlet_logposterior(T, Z, sig=0.1, alpha=jnp.ones(3),
+                                    slope_grid=jnp.array([0.0, 1.0]))

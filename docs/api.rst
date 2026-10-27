@@ -23,7 +23,7 @@ Likelihood
 ----------
 
 .. automodule:: bii.inference
-   :members: delta_V_one_triplet, logP_log1mP_from_deltaV, loglik_w, loglik_w_per_triplet, loglik_theta, inclusion_probs
+   :members: delta_V_one_triplet, logP_log1mP_from_deltaV, loglik_w, loglik_w_per_triplet, loglik_theta, inclusion_probs, slope_scale, loglik_w_slope_grid, slope_posterior
 
 Sampling
 --------
