@@ -36,6 +36,29 @@ def test_run_nuts_smoke():
     assert acc.shape == (30, 1)
 
 
+def test_run_nuts_warms_up_for_num_warmup_steps(monkeypatch):
+    """Regression: num_warmup reaches BlackJAX, which used to warm up 1000 steps."""
+    import blackjax
+
+    seen = []
+    real = blackjax.window_adaptation
+
+    def spy(*args, **kwargs):
+        adaptation = real(*args, **kwargs)
+
+        def run(key, position, num_steps=1000):
+            seen.append(num_steps)
+            return adaptation.run(key, position, num_steps=num_steps)
+
+        return adaptation._replace(run=run)
+
+    monkeypatch.setattr(blackjax, "window_adaptation", spy)
+    key = jr.PRNGKey(3)
+    run_nuts(key, _make_logprob(key, p=3), jnp.zeros(3),
+             num_samples=5, num_warmup=7, num_chains=2)
+    assert seen == [7]
+
+
 def test_run_vi_smoke():
     key = jr.PRNGKey(1)
     logprob_fn = _make_logprob(key, p=3)

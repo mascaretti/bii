@@ -48,7 +48,6 @@ def run_nuts(
     warmup = blackjax.window_adaptation(
         blackjax.nuts,
         logprob_fn,
-        num_warmup,
         target_acceptance_rate=target_acceptance_rate,
         initial_step_size=step_size,
     )
@@ -56,7 +55,9 @@ def run_nuts(
     def run_one_chain(chain_key, init_pos):
         """Warm up and sample one chain; vmapped over chains below."""
         key_warm, key_sample = random.split(chain_key)
-        (state, params), _ = warmup.run(key_warm, init_pos)
+        # The number of warmup steps goes to run(): without num_steps it
+        # defaults to 1000 whatever num_warmup says.
+        (state, params), _ = warmup.run(key_warm, init_pos, num_steps=num_warmup)
         kernel = blackjax.nuts(logprob_fn, **params)
 
         def one_step(st, k):
