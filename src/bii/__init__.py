@@ -13,6 +13,7 @@ from bii.data import (
     target_yfar_bump,
 )
 from bii.diagnostics import (
+    aligned_triplets,
     alignment_index,
     compute_ess,
     compute_rhat,
@@ -21,7 +22,7 @@ from bii.diagnostics import (
     weight_entropy,
 )
 from bii.fit import fit_bii
-from bii.priors import make_betaprime_logposterior, make_dirichlet_logposterior
+from bii.priors import make_dirichlet_logposterior, make_slope_grid
 from bii.sampling import run_map, run_nuts, run_vi, sample_vi
 
 __all__ = [
@@ -37,7 +38,7 @@ __all__ = [
     "make_triplets_zfar",
     "target_yfar_bump",
     "make_dirichlet_logposterior",
-    "make_betaprime_logposterior",
+    "make_slope_grid",
     "run_nuts",
     "run_vi",
     "run_map",
@@ -47,5 +48,6 @@ __all__ = [
     "compute_ess",
     "weight_entropy",
     "triplet_accuracy",
+    "aligned_triplets",
     "alignment_index",
 ]

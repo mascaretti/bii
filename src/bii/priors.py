@@ -6,13 +6,28 @@ Each ``make_*_logposterior`` closes over data and returns a pure
 
 import jax
 from jax import numpy as jnp
+from jax.scipy.special import logsumexp
 
-from bii.inference import loglik_w
+from bii.inference import loglik_w, loglik_w_slope_grid
+
+
+def make_slope_grid(lo=1e-3, hi=10.0, num=49):
+    """Log-spaced grid of calibrated slopes, for ``slope_grid``.
+
+    Uniform weights on this grid are a log-uniform prior on the calibrated
+    slope over ``[lo, hi]``. The calibrated slope is the root-mean-square
+    standardised gap after calibration (see
+    :func:`bii.inference.loglik_w_slope_grid`): values near ``lo`` make every
+    triplet close to a coin flip, and the value
+    :func:`bii.inference.slope_scale` recovers the plain likelihood.
+    """
+    return jnp.exp(jnp.linspace(jnp.log(lo), jnp.log(hi), num))
 
 
 def make_dirichlet_logposterior(T, Z, sig, alpha, kappa=1.0, noise_model="additive",
                                 triplet_weights=None, clip_s=None, pi_inclusion=None,
-                                pi_prior=None, link="probit", tau_prior=None):
+                                pi_prior=None, link="probit", tau_prior=None,
+                                slope_grid=None):
     """Return ``logprob_fn(position) -> scalar`` for a Dirichlet prior.
 
     Args:
@@ -51,17 +66,54 @@ def make_dirichlet_logposterior(T, Z, sig, alpha, kappa=1.0, noise_model="additi
             push-forward of ``Gamma(a, b)`` on ``tau``. Mutually exclusive
             with ``pi_prior`` (raise) — compose ``tau_prior`` with a fixed
             ``pi_inclusion`` instead if both effects are needed.
+        slope_grid: optional (R,) array of positive calibrated slopes, e.g.
+            :func:`make_slope_grid`. When set, the standardised gap becomes
+            ``lam * s_t`` with ``lam = slope / slope_scale(w)``, and the
+            slope is integrated out on the grid with uniform weights inside
+            the tempering: ``logsumexp_r(kappa * ll_r) - log R``. This gives
+            the likelihood a confidence knob of its own, so that weak signal
+            widens the posterior instead of collapsing it onto the
+            coordinate with the lowest spread-to-noise ratio (see
+            :func:`bii.inference.loglik_w_slope_grid`). The position stays
+            ``theta`` alone, so no funnel arises. Mutually exclusive with
+            ``pi_prior`` and ``tau_prior`` (raise); composes with
+            ``clip_s``, ``link`` and a fixed ``pi_inclusion``.
 
     Returns:
-        A callable that takes a ``(p,)`` array (no learned nuisance), or a
-        ``(p + 1,)`` array (``pi_prior`` or ``tau_prior`` given) and returns
-        the log-posterior up to an additive constant.
+        A callable that takes a ``(p,)`` array (no learned nuisance, or
+        ``slope_grid``), or a ``(p + 1,)`` array (``pi_prior`` or
+        ``tau_prior`` given) and returns the log-posterior up to an additive
+        constant.
     """
     if pi_prior is not None and tau_prior is not None:
         raise NotImplementedError(
             "pi_prior and tau_prior cannot be sampled jointly yet; "
             "use tau_prior with a fixed pi_inclusion instead."
         )
+
+    if slope_grid is not None:
+        if pi_prior is not None or tau_prior is not None:
+            raise NotImplementedError(
+                "slope_grid cannot be combined with pi_prior or tau_prior: each "
+                "calibrates the confidence of the triplet probabilities."
+            )
+        slope_grid = jnp.asarray(slope_grid)
+        if (slope_grid.ndim != 1 or slope_grid.size == 0
+                or not bool(jnp.all(slope_grid > 0))):
+            raise ValueError("slope_grid must be a non-empty 1-D array of positive slopes.")
+        log_r = jnp.log(slope_grid.shape[0])
+
+        def logprob_fn_with_slope(theta):
+            w = jax.nn.softmax(theta)
+            ll = loglik_w_slope_grid(w, T, Z, sig, slope_grid, noise_model,
+                                     triplet_weights=triplet_weights, clip_s=clip_s,
+                                     pi_inclusion=pi_inclusion, link=link)
+            # Uniform prior weights on the grid; the slope is integrated out,
+            # so the position is theta alone.
+            return (logsumexp(kappa * ll) - log_r
+                    + jnp.sum(alpha * jnp.log(w + 1e-12)))
+
+        return logprob_fn_with_slope
 
     if pi_prior is None and tau_prior is None:
         def logprob_fn(theta):
@@ -119,29 +171,3 @@ def make_dirichlet_logposterior(T, Z, sig, alpha, kappa=1.0, noise_model="additi
                 + log_pi_prior)
 
     return logprob_fn_with_pi
-
-
-def make_betaprime_logposterior(T, Z, sig, a, b, kappa=1.0, noise_model="additive",
-                                triplet_weights=None, clip_s=None,
-                                pi_inclusion=None, link="probit"):
-    """Return ``logprob_fn(theta) -> scalar`` with a Beta-prime prior.
-
-    Weights are ``w = softmax(theta)``, i.e. ``w_i = x_i / sum_j x_j`` with
-    ``x_i = exp(theta_i) ~ BetaPrime(a, b)`` i.i.d. The log-transform Jacobian
-    is absorbed, so the prior on ``theta_i`` has log-density
-    ``a * theta_i - (a + b) * softplus(theta_i)`` (up to a constant).
-
-    Args:
-        a, b: Beta-prime shape parameters; scalars or ``(p,)`` arrays.
-        Other arguments: as in :func:`make_dirichlet_logposterior`. The learned
-            nuisance options ``pi_prior`` and ``tau_prior`` are not supported.
-    """
-    def logprob_fn(theta):
-        w = jax.nn.softmax(theta)
-        ll = loglik_w(w, T, Z, sig, noise_model,
-                      triplet_weights=triplet_weights, clip_s=clip_s,
-                      pi_inclusion=pi_inclusion, link=link)
-        log_prior = jnp.sum(a * theta - (a + b) * jax.nn.softplus(theta))
-        return kappa * ll + log_prior
-
-    return logprob_fn

@@ -31,7 +31,8 @@ standard deviation (a scalar, a per-feature `(p,)` vector, or per-point).
 | `raw_samples` | the unconstrained-space draws before the softmax transform |
 | `diagnostics` | R-hat and ESS per coordinate (see {mod}`bii.diagnostics`) |
 | `waic` | held-out predictive score (`None` if `compute_waic_flag=False`) |
-| `alignment` | entropy, triplet accuracy, and alignment index of the fit |
+| `alignment` | per draw: entropy, triplet accuracy, number of aligned triplets (`n_aligned`), and alignment index |
+| `n_triplets` | number of triplets the fit used |
 | `kappa` | the power-likelihood (Godambe) correction actually used |
 | `pi_samples`, `tau_samples` | draws for the optional inclusion-mixture / relation-noise extensions |
 | `elapsed_seconds` | wall-clock time of the fit |

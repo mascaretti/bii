@@ -44,6 +44,9 @@ def test_fit_smoke():
     assert jnp.allclose(sums, 1.0, atol=1e-5)
     assert jnp.all(w >= 0)
     assert jnp.isfinite(result["waic"])
+    n_aligned = result["alignment"]["n_aligned"]
+    assert n_aligned.shape == (50,)
+    assert jnp.all((n_aligned >= 0) & (n_aligned <= result["n_triplets"]))
 
 
 def test_fit_multiplicative_smoke():

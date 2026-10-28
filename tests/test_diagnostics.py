@@ -102,3 +102,29 @@ def test_alignment_index_shape_and_finite():
     assert idx.shape == (10,)
     assert jnp.all(jnp.isfinite(idx))
     assert jnp.all(idx <= 1.0)
+
+
+def test_aligned_triplets_matches_accuracy():
+    """The count is the accuracy times the number of triplets, draw by draw."""
+    from bii.diagnostics import aligned_triplets, triplet_accuracy
+
+    key = jr.PRNGKey(6)
+    T, Z = _make_triplet_data(key)
+    w_samples = jnp.array([[1 / 3, 1 / 3, 1 / 3], [0.8, 0.1, 0.1]])
+    n_aligned = aligned_triplets(w_samples, T, Z, sig=0.1)
+    acc = triplet_accuracy(w_samples, T, Z, sig=0.1)
+    assert n_aligned.shape == (2,)
+    assert jnp.all((n_aligned >= 0) & (n_aligned <= T.shape[0]))
+    assert jnp.allclose(n_aligned, acc * T.shape[0], atol=1e-3)
+
+
+def test_aligned_triplets_preresolved_sig():
+    """Pre-resolved (n, 3) sigmas give the same counts as the scalar."""
+    from bii.diagnostics import aligned_triplets
+
+    key = jr.PRNGKey(7)
+    T, Z = _make_triplet_data(key, p=4)
+    w_samples = jnp.ones((3, 4)) / 4
+    sig_pre = jnp.full((T.shape[0], 3), 0.1)
+    assert jnp.array_equal(aligned_triplets(w_samples, T, Z, sig=0.1),
+                           aligned_triplets(w_samples, T, Z, sig=sig_pre))

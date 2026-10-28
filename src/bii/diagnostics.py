@@ -6,14 +6,15 @@ from jax import numpy as jnp
 from scipy.special import ndtri
 from scipy.stats import rankdata
 
-from bii.inference import delta_V_one_triplet, loglik_w_per_triplet
+from bii.inference import _delta_V_all, delta_V_one_triplet, loglik_w_per_triplet
 
 
 def compute_waic(w_samples_flat, T, Z, sig, noise_model="additive", link="probit",
-                 tau2=0.0):
+                 tau2=0.0, lam=1.0):
     """Compute WAIC using lax.map to prevent OOM."""
     per_triplet_ll = jax.lax.map(
-        lambda w: loglik_w_per_triplet(w, T, Z, sig, noise_model, link=link, tau2=tau2),
+        lambda w: loglik_w_per_triplet(w, T, Z, sig, noise_model, link=link, tau2=tau2,
+                                       lam=lam),
         w_samples_flat
     )
 
@@ -183,8 +184,33 @@ def triplet_accuracy(w_samples, T, Z, sig, noise_model="additive"):
     return jax.lax.map(accuracy_one, w_samples)
 
 
+def aligned_triplets(w_samples, T, Z, sig, noise_model="additive"):
+    """Number of aligned triplets for each posterior sample.
+
+    A triplet is aligned under ``w`` when the source ordering agrees with
+    the target label: the predicted label ``1{delta(w) <= 0}`` equals ``T``,
+    i.e. its signed gap is positive. The count is
+    ``triplet_accuracy * n_triplets``, kept as an integer for reporting.
+
+    Args:
+        w_samples: (S, p) posterior draws on the simplex.
+        T: (n,) binary triplet labels.
+        Z: (n, 3, p) triplet embeddings.
+        sig: noise std — scalar, (p,), or pre-resolved per-triplet.
+        noise_model: ``"additive"`` or ``"multiplicative"``.
+
+    Returns:
+        (S,) integer counts in ``[0, n]``.
+    """
+    def count_one(w):
+        delta, _V = _delta_V_all(w, Z, sig, noise_model)
+        return jnp.sum((delta <= 0.0).astype(jnp.float32) == T)
+
+    return jax.lax.map(count_one, w_samples)
+
+
 def alignment_index(w_samples, T, Z, sig, noise_model="additive", link="probit",
-                    tau2=0.0):
+                    tau2=0.0, lam=1.0):
     """Normalised cross-entropy alignment index.
 
     Maps the mean per-triplet log-likelihood to [0, 1]:
@@ -201,7 +227,8 @@ def alignment_index(w_samples, T, Z, sig, noise_model="additive", link="probit",
         (S,) alignment index values in [0, 1].
     """
     def delta_one(w):
-        ll = loglik_w_per_triplet(w, T, Z, sig, noise_model, link=link, tau2=tau2)
+        ll = loglik_w_per_triplet(w, T, Z, sig, noise_model, link=link, tau2=tau2,
+                                  lam=lam)
         mean_ll = jnp.mean(ll)
         return 1.0 + mean_ll / jnp.log(2.0)
 

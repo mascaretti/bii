@@ -59,6 +59,7 @@ mypy src
 - `compute_waic()`: WAIC from posterior samples
 - `compute_rhat()`: Gelman-Rubin R-hat
 - `compute_ess()`: Effective sample size
+- `aligned_triplets()`: Number of aligned triplets (source ordering agrees with the target label) per draw
 
 **fit.py** — Thin composition layer
 - `fit_bii()`: Orchestrates triplets → logposterior → sampling → diagnostics

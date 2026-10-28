@@ -8,6 +8,7 @@ from jax import random
 
 from bii.data import make_triplets
 from bii.diagnostics import (
+    aligned_triplets,
     compute_ess,
     compute_rhat,
     compute_waic,
@@ -164,8 +165,10 @@ def fit_bii(
 
     Returns:
         dict with keys ``w_samples``, ``raw_samples``, ``T``, ``Z``,
-        ``triplet_indices``, ``kappa``, ``waic``,
-        ``elapsed_seconds``, ``diagnostics``.
+        ``triplet_indices``, ``n_triplets``, ``kappa``, ``waic``,
+        ``alignment`` (per-draw ``entropy``, ``triplet_accuracy``,
+        ``n_aligned`` and ``alignment_index``), ``elapsed_seconds``,
+        ``diagnostics``.
     """
     t0 = time.perf_counter()
     p = Z_pool.shape[1]
@@ -362,6 +365,7 @@ def fit_bii(
     from bii.diagnostics import alignment_index as _alignment_index
     entropy_scores = weight_entropy(w_flat)
     accuracy_scores = triplet_accuracy(w_flat, T, Z, sig_resolved, noise_model)
+    n_aligned = aligned_triplets(w_flat, T, Z, sig_resolved, noise_model)
     alignment_idx = _alignment_index(w_flat, T, Z, sig_resolved, noise_model,
                                      link=link, tau2=tau2_eval, lam=lam_eval)
 
@@ -373,6 +377,7 @@ def fit_bii(
         "T": T,
         "Z": Z,
         "triplet_indices": indices,
+        "n_triplets": int(T.shape[0]),
         "triplet_weights": triplet_weights,
         "inclusion_probs": incl_probs,
         "pi_inclusion": pi_inclusion,
@@ -390,6 +395,7 @@ def fit_bii(
         "alignment": {
             "entropy": entropy_scores,
             "triplet_accuracy": accuracy_scores,
+            "n_aligned": n_aligned,
             "alignment_index": alignment_idx,
         },
         "elapsed_seconds": elapsed,
