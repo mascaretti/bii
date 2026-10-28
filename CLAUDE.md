@@ -80,7 +80,8 @@ X_pool, Z_pool → make_triplets → (T, X, Z, indices)
 
 ### Key Patterns
 
-- **Weights**: Always constrained to simplex via softmax(theta)
+- **Weights**: Always constrained to simplex via softmax(theta); every log posterior adds a
+  standard normal on sum(theta), the direction softmax ignores, so NUTS does not drift
 - **Composable priors**: `make_*_logposterior` closes over data, returns pure `logprob_fn`
 - **Vectorization**: Heavy use of `jax.vmap()` for broadcasting
 - **Random keys**: Always split before use with `random.split()`

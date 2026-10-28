@@ -214,7 +214,8 @@ def test_slope_grid_logposterior_matches_logsumexp():
     theta = jnp.array([0.3, -0.2, 0.1, 0.0])
     w = jax.nn.softmax(theta)
     ll = loglik_w_slope_grid(w, T, Z, 0.1, grid)
-    expected = logsumexp(kappa * ll) - jnp.log(7.0) + jnp.sum(jnp.log(w + 1e-12))
+    expected = (logsumexp(kappa * ll) - jnp.log(7.0) + jnp.sum(jnp.log(w + 1e-12))
+                - 0.5 * jnp.sum(theta) ** 2 / 4)
     assert jnp.allclose(logprob_fn(theta), expected, rtol=1e-5)
 
 
@@ -251,3 +252,34 @@ def test_slope_grid_rejects_nonpositive():
     with pytest.raises(ValueError):
         make_dirichlet_logposterior(T, Z, sig=0.1, alpha=jnp.ones(3),
                                     slope_grid=jnp.array([0.0, 1.0]))
+
+
+def test_logposterior_is_proper_along_the_sum_of_theta():
+    """softmax ignores a constant added to every theta; the posterior does not.
+
+    Shifting theta by c along (1, ..., 1) leaves w, the likelihood and the
+    Dirichlet term unchanged, so the log posterior drops by exactly
+    (p c)^2 / (2 p) from a point where sum(theta) = 0.
+    """
+    T, Z = _make_data(jr.PRNGKey(22), p=3)
+    logprob_fn = make_dirichlet_logposterior(T, Z, sig=0.1, alpha=jnp.ones(3))
+    theta = jnp.array([0.2, -0.1, -0.1])
+    drop = logprob_fn(theta) - logprob_fn(theta + 2.0)
+    assert jnp.allclose(drop, 0.5 * 6.0**2 / 3, rtol=1e-4)
+
+
+def test_prior_only_draws_follow_the_dirichlet():
+    """Known answer: with kappa = 0, NUTS draws of w follow Dirichlet(alpha).
+
+    The term on sum(theta) must leave the distribution of w unchanged:
+    E[w] = alpha / sum(alpha) = (1/6, 2/6, 3/6).
+    """
+    from bii.sampling import run_nuts
+
+    T, Z = _make_data(jr.PRNGKey(23), p=3)
+    alpha = jnp.array([1.0, 2.0, 3.0])
+    logprob_fn = make_dirichlet_logposterior(T, Z, sig=0.1, alpha=alpha, kappa=0.0)
+    raw, _ = run_nuts(jr.PRNGKey(24), logprob_fn, jnp.zeros(3),
+                      num_samples=1000, num_warmup=500, num_chains=2)
+    w = jax.nn.softmax(raw.reshape(-1, 3), axis=-1)
+    assert jnp.allclose(w.mean(axis=0), alpha / 6.0, atol=0.03)

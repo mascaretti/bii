@@ -24,6 +24,19 @@ def make_slope_grid(lo=1e-3, hi=10.0, num=49):
     return jnp.exp(jnp.linspace(jnp.log(lo), jnp.log(hi), num))
 
 
+def _sum_logdensity(theta):
+    """Standard normal log-density of the component of ``theta`` along ``(1, ..., 1)``.
+
+    ``softmax(theta)`` is unchanged when the same constant is added to every
+    entry, so without this term the log posterior is flat along ``(1, ..., 1)``:
+    NUTS drifts there and needs about ten times more leapfrog steps per draw.
+    The density factorises into a function of ``w`` and one of ``sum(theta)``,
+    so the term makes the posterior proper and leaves the distribution of ``w``
+    unchanged.
+    """
+    return -0.5 * jnp.sum(theta) ** 2 / theta.shape[0]
+
+
 def make_dirichlet_logposterior(T, Z, sig, alpha, kappa=1.0, noise_model="additive",
                                 triplet_weights=None, clip_s=None, pi_inclusion=None,
                                 pi_prior=None, link="probit", tau_prior=None,
@@ -83,7 +96,9 @@ def make_dirichlet_logposterior(T, Z, sig, alpha, kappa=1.0, noise_model="additi
         A callable that takes a ``(p,)`` array (no learned nuisance, or
         ``slope_grid``), or a ``(p + 1,)`` array (``pi_prior`` or
         ``tau_prior`` given) and returns the log-posterior up to an additive
-        constant.
+        constant. Every branch adds a standard normal log-density on the
+        component of ``theta`` along ``(1, ..., 1)``, which ``softmax`` ignores
+        (see :func:`_sum_logdensity`).
     """
     if pi_prior is not None and tau_prior is not None:
         raise NotImplementedError(
@@ -111,7 +126,7 @@ def make_dirichlet_logposterior(T, Z, sig, alpha, kappa=1.0, noise_model="additi
             # Uniform prior weights on the grid; the slope is integrated out,
             # so the position is theta alone.
             return (logsumexp(kappa * ll) - log_r
-                    + jnp.sum(alpha * jnp.log(w + 1e-12)))
+                    + jnp.sum(alpha * jnp.log(w + 1e-12)) + _sum_logdensity(theta))
 
         return logprob_fn_with_slope
 
@@ -121,7 +136,8 @@ def make_dirichlet_logposterior(T, Z, sig, alpha, kappa=1.0, noise_model="additi
             ll = loglik_w(w, T, Z, sig, noise_model,
                           triplet_weights=triplet_weights, clip_s=clip_s,
                           pi_inclusion=pi_inclusion, link=link)
-            return kappa * ll + jnp.sum(alpha * jnp.log(w + 1e-12))
+            return (kappa * ll + jnp.sum(alpha * jnp.log(w + 1e-12))
+                    + _sum_logdensity(theta))
         return logprob_fn
 
     if tau_prior is not None:
@@ -142,6 +158,7 @@ def make_dirichlet_logposterior(T, Z, sig, alpha, kappa=1.0, noise_model="additi
             log_tau_prior = a_t * log_tau - b_t * tau
             return (kappa * ll
                     + jnp.sum(alpha * jnp.log(w + 1e-12))
+                    + _sum_logdensity(theta)
                     + log_tau_prior)
 
         return logprob_fn_with_tau
@@ -168,6 +185,7 @@ def make_dirichlet_logposterior(T, Z, sig, alpha, kappa=1.0, noise_model="additi
         log_pi_prior = a * log_pi + b * log_one_minus_pi
         return (kappa * ll
                 + jnp.sum(alpha * jnp.log(w + 1e-12))
+                + _sum_logdensity(theta)
                 + log_pi_prior)
 
     return logprob_fn_with_pi
