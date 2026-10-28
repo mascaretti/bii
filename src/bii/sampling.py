@@ -11,6 +11,18 @@ from jax import random
 # ---------------------------------------------------------------------------
 
 
+def _report_progress(total):
+    """Host callback for the sampling scan: prints ``sampling i/total`` every 10%."""
+    every = max(1, total // 10)
+
+    def report(i):
+        i = int(i) + 1
+        if i % every == 0 or i == total:
+            print(f"sampling {i}/{total}", flush=True)
+
+    return report
+
+
 def run_nuts(
     key,
     logprob_fn,
@@ -20,6 +32,7 @@ def run_nuts(
     num_chains,
     step_size=1e-3,
     target_acceptance_rate=0.8,
+    progress_bar=False,
 ):
     """Run multi-chain NUTS via BlackJAX.
 
@@ -32,6 +45,11 @@ def run_nuts(
         num_chains: number of MCMC chains.
         step_size: initial NUTS step size.
         target_acceptance_rate: NUTS target acceptance.
+        progress_bar: if True, announce the run and print ``sampling i/n``
+            about every 10% of the draws. The step counter is the same for
+            every chain, so each line prints once, not once per chain. The
+            warmup runs inside BlackJAX and has no progress lines; the first
+            ``sampling`` line marks its end.
 
     Returns:
         ``(raw_samples, acceptance_rates)``
@@ -44,6 +62,11 @@ def run_nuts(
     init_positions = init_position[None, :] + 0.1 * random.normal(
         key_init, shape=(num_chains, dim)
     )
+
+    if progress_bar:
+        print(f"NUTS: {num_chains} chains, {num_warmup} warmup steps, "
+              f"then {num_samples} draws", flush=True)
+    report = _report_progress(num_samples)
 
     warmup = blackjax.window_adaptation(
         blackjax.nuts,
@@ -60,12 +83,15 @@ def run_nuts(
         (state, params), _ = warmup.run(key_warm, init_pos, num_steps=num_warmup)
         kernel = blackjax.nuts(logprob_fn, **params)
 
-        def one_step(st, k):
+        def one_step(st, xs):
+            i, k = xs
             new_st, info = kernel.step(k, st)
+            if progress_bar:
+                jax.debug.callback(report, i)
             return new_st, (new_st.position, info.acceptance_rate)
 
-        sample_keys = random.split(key_sample, num_samples)
-        _, (positions, acc) = jax.lax.scan(one_step, state, sample_keys)
+        xs = (jnp.arange(num_samples), random.split(key_sample, num_samples))
+        _, (positions, acc) = jax.lax.scan(one_step, state, xs)
         return positions, acc  # (num_samples, dim), (num_samples,)
 
     # Chains run in parallel via vmap (vectorised over the GPU).

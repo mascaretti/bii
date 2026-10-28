@@ -59,6 +59,21 @@ def test_run_nuts_warms_up_for_num_warmup_steps(monkeypatch):
     assert seen == [7]
 
 
+def test_run_nuts_progress_prints_once_per_step(capsys):
+    """Progress lines come once per reported step, not once per chain."""
+    import jax
+
+    key = jr.PRNGKey(4)
+    raw, _ = run_nuts(key, _make_logprob(key, p=3), jnp.zeros(3),
+                      num_samples=20, num_warmup=10, num_chains=2, progress_bar=True)
+    jax.block_until_ready(raw)
+    jax.effects_barrier()
+    out = capsys.readouterr().out
+    assert "NUTS: 2 chains, 10 warmup steps, then 20 draws" in out
+    assert out.count("sampling 2/20") == 1
+    assert out.count("sampling 20/20") == 1
+
+
 def test_run_vi_smoke():
     key = jr.PRNGKey(1)
     logprob_fn = _make_logprob(key, p=3)

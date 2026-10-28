@@ -66,6 +66,7 @@ def fit_bii(
     map_restarts=1,
     # Options
     compute_waic_flag=True,
+    progress_bar=False,
 ):
     """Unified Bayesian inference pipeline for metric weights.
 
@@ -162,6 +163,8 @@ def fit_bii(
         map_steps: Adam iterations for the MAP optimisation.
         map_lr: Adam learning rate for MAP.
         map_restarts: random-init restarts for MAP; the best mode is kept.
+        progress_bar: NUTS only; print the sampling progress about every 10%
+            of the draws (see :func:`bii.sampling.run_nuts`).
 
     Returns:
         dict with keys ``w_samples``, ``raw_samples``, ``T``, ``Z``,
@@ -225,6 +228,7 @@ def fit_bii(
         raw_samples, acceptance_rates = run_nuts(
             key_nuts, logprob_fn, init_position,
             num_samples, num_warmup, num_chains, step_size, target_acceptance_rate,
+            progress_bar=progress_bar,
         )
 
         if pi_prior is not None:
