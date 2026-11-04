@@ -1,53 +1,63 @@
-# bii — Bayesian Information Imbalance
+# bii: Bayesian information imbalance
 
-Bayesian estimation of metric weights from triplet comparisons using MCMC (NUTS) and mean-field variational inference.
+Weights `w` on the simplex for a weighted Euclidean metric on a noisy source `Z`,
+learned from triplets: which of two candidates is closer to an anchor in a trusted
+target `X`. Each label is a probit of the source's standardised gap, the weights carry
+a Dirichlet prior, the likelihood is tempered by `kappa` for overlapping triplets, and
+a calibration slope can be integrated out on a grid. Inference is NUTS (BlackJAX) or
+the posterior mode.
 
-[![Documentation Status](https://readthedocs.org/projects/bii/badge/?version=latest)](https://bii.readthedocs.io/en/latest/?badge=latest)
-
-## Documentation
-
-Full documentation (guide + API reference) lives in `docs/` and is published with
-[Read the Docs](https://readthedocs.org). Build it locally:
-
-```bash
-pip install -e ".[docs]"
-sphinx-build -b html docs docs/_build/html
-```
-
-## Installation
+## Install
 
 ```bash
-pip install git+https://github.com/mascaretti/bii.git
+pip install "git+https://github.com/mascaretti/bii.git@release"
 ```
 
-For development:
-
-```bash
-git clone https://github.com/mascaretti/bii.git
-cd bii
-pip install -e ".[dev]"
-```
-
-## Quick start
+## Use
 
 ```python
 from jax import random
-from bii import fit_bii
+from bii import fit_bii, make_slope_grid
 
-key = random.PRNGKey(42)
-result = fit_bii(key, X_pool, Z_pool, sig=0.1, prior="dirichlet",
-                 n_triplets=500, num_samples=2000)
-# result["w_samples"]: (num_samples, num_chains, p) on simplex
+res = fit_bii(random.PRNGKey(0), X_pool, Z_pool, sig=S_pool, n_triplets=15,
+              kappa=1 / 15, slope_grid=make_slope_grid())
+res["w_samples"]   # (num_samples, num_chains, p), on the simplex
+res["slope_mean"]  # posterior mean of the calibration slope
 ```
 
-## Composable API
+`sig` is the source's noise standard deviation: a scalar, per feature `(p,)`, per
+point `(N,)`, or per point and feature `(N, p)`. `inference_method="map"` returns the
+posterior mode instead of draws.
 
-```python
-from bii import make_triplets, make_dirichlet_logposterior, run_nuts
+## Modules
 
-T, X, Z, idx = make_triplets(key, X_pool, Z_pool, n_triplets=500)
-logprob_fn = make_dirichlet_logposterior(T, Z, sig=0.1, alpha=ones(p))
-raw_samples, acc = run_nuts(key, logprob_fn, zeros(p),
-                            num_samples=2000, num_warmup=1000,
-                            num_chains=4)
+- `data`: triplets from the pools (`make_triplets`), their labels (`T_from_X`) and
+  `kappa_from_triplets`.
+- `inference`: the moments of the gap (`delta_V_one_triplet`), the log-likelihood and
+  the calibration slope.
+- `priors`: the Dirichlet log posterior, with or without the slope grid.
+- `sampling`: NUTS and MAP.
+- `diagnostics`: R-hat, ESS, WAIC and aligned triplets.
+- `fit`: `fit_bii`, which composes them.
+
+## Reproducing the paper
+
+The experiments (<https://github.com/mascaretti/bayesian-information-imbalance>) pin
+the commit `aa921d9`; this branch gives the same numbers, bit for bit, on a CPU. They
+ran with jax 0.8.2, blackjax 1.7.1 and optax 0.2.8. Blackjax 1.7.1 declares
+`jax>=0.9`, so install it and this package without dependencies:
+
+```bash
+pip install "jax==0.8.2" "jaxlib==0.8.2" "optax==0.2.8" numpy scipy typing-extensions
+pip install --no-deps "blackjax==1.7.1" -e .
+```
+
+On that stack, `tests/test_fit.py::test_reproduces_the_reference_numbers` checks the
+numbers; elsewhere it is skipped.
+
+## Tests
+
+```bash
+pip install -e ".[dev]"
+pytest    # under a minute on a laptop CPU
 ```

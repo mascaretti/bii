@@ -1,130 +1,35 @@
-"""Tests for WAIC, R-hat, and ESS diagnostics."""
+import numpy as np
+from jax import numpy as jnp
 
-import jax.numpy as jnp
-import jax.random as jr
+from bii import aligned_triplets, compute_ess, compute_rhat, compute_waic
+from bii.inference import loglik_w_per_triplet
 
-from bii.data import make_triplets
-from bii.diagnostics import compute_ess, compute_rhat, compute_waic
-
-
-def _make_triplet_data(key, n=100, p=3, sig=0.1):
-    k1, k2 = jr.split(key)
-    X = jr.normal(k1, (n, p))
-    Z = X + jr.normal(k2, (n, p)) * sig
-    T, _, Z_trip, _ = make_triplets(key, X, Z, n_triplets=30)
-    return T, Z_trip
+RNG = np.random.default_rng(0)
 
 
-def test_waic_finite():
-    key = jr.PRNGKey(0)
-    T, Z = _make_triplet_data(key)
-    w_samples = jnp.ones((50, 3)) / 3
-    waic = compute_waic(w_samples, T, Z, sig=0.1)
-    assert waic.shape == ()
-    assert jnp.isfinite(waic)
+def test_rhat_and_ess_on_independent_draws():
+    x = RNG.standard_normal((1000, 4, 2))
+    assert np.all(np.abs(compute_rhat(x) - 1) < 0.01)
+    assert np.all(np.abs(compute_ess(x) / 4000 - 1) < 0.25)
 
 
-def test_waic_varies_with_weights():
-    key = jr.PRNGKey(2)
-    T, Z = _make_triplet_data(key)
-    S = 50
-    w1 = jnp.ones((S, 3)) / 3
-    w2 = jnp.broadcast_to(jnp.array([0.8, 0.1, 0.1]), (S, 3))
-    waic1 = compute_waic(w1, T, Z, sig=0.1)
-    waic2 = compute_waic(w2, T, Z, sig=0.1)
-    assert not jnp.allclose(waic1, waic2, atol=1e-6)
+def test_rhat_flags_chains_that_disagree():
+    x = RNG.standard_normal((1000, 4, 1)) + np.array([0.0, 0.0, 0.0, 3.0])[None, :, None]
+    assert compute_rhat(x)[0] > 1.1
 
 
-def test_rhat_identical_chains():
-    """Identical chains should have R-hat = 1."""
-    samples = jnp.ones((100, 2, 3)) * 0.5
-    # Add small noise to avoid zero variance
-    key = jr.PRNGKey(0)
-    samples = samples + 0.001 * jr.normal(key, (100, 2, 3))
-    rhat = compute_rhat(samples)
-    assert rhat.shape == (3,)
-    assert jnp.all(rhat < 1.1)
+def test_aligned_triplets_known_answer():
+    # one coordinate; candidate i at 1 from the anchor, candidate j at 3
+    Z = jnp.array([[[0.0], [1.0], [3.0]]] * 4)
+    T = jnp.array([1.0, 1.0, 1.0, 0.0])  # the source says label 1: three of four agree
+    assert int(aligned_triplets(jnp.ones((2, 1)), T, Z, 0.1)[0]) == 3
 
 
-def test_ess_positive():
-    """ESS should be positive."""
-    key = jr.PRNGKey(1)
-    samples = jr.normal(key, (100, 2, 3))
-    ess = compute_ess(samples)
-    assert ess.shape == (3,)
-    assert jnp.all(ess > 0)
-
-
-def test_weight_entropy_extremes():
-    """Uniform w -> 0; point mass -> 1."""
-    from bii.diagnostics import weight_entropy
-
-    p = 4
-    uniform = jnp.ones((1, p)) / p
-    point = jnp.zeros((1, p)).at[0, 0].set(1.0)
-    assert jnp.allclose(weight_entropy(uniform), 0.0, atol=1e-6)
-    assert jnp.allclose(weight_entropy(point), 1.0, atol=1e-6)
-
-
-def test_triplet_accuracy_range_and_shape():
-    from bii.diagnostics import triplet_accuracy
-
-    key = jr.PRNGKey(3)
-    T, Z = _make_triplet_data(key)
-    w_samples = jnp.ones((10, 3)) / 3
-    acc = triplet_accuracy(w_samples, T, Z, sig=0.1)
-    assert acc.shape == (10,)
-    assert jnp.all(acc >= 0.0) and jnp.all(acc <= 1.0)
-    # Z ~ X with small noise: uniform w should predict well above chance
-    assert jnp.all(acc > 0.6)
-
-
-def test_triplet_accuracy_preresolved_sig():
-    """Pre-resolved (n, 3) sigmas give the same accuracy as the scalar."""
-    from bii.diagnostics import triplet_accuracy
-
-    key = jr.PRNGKey(4)
-    T, Z = _make_triplet_data(key, p=4)
-    w_samples = jnp.ones((5, 4)) / 4
-    sig_pre = jnp.full((T.shape[0], 3), 0.1)
-    acc_scalar = triplet_accuracy(w_samples, T, Z, sig=0.1)
-    acc_pre = triplet_accuracy(w_samples, T, Z, sig=sig_pre)
-    assert jnp.allclose(acc_scalar, acc_pre, atol=1e-6)
-
-
-def test_alignment_index_shape_and_finite():
-    from bii.diagnostics import alignment_index
-
-    key = jr.PRNGKey(5)
-    T, Z = _make_triplet_data(key)
-    w_samples = jnp.ones((10, 3)) / 3
-    idx = alignment_index(w_samples, T, Z, sig=0.1)
-    assert idx.shape == (10,)
-    assert jnp.all(jnp.isfinite(idx))
-    assert jnp.all(idx <= 1.0)
-
-
-def test_aligned_triplets_matches_accuracy():
-    """The count is the accuracy times the number of triplets, draw by draw."""
-    from bii.diagnostics import aligned_triplets, triplet_accuracy
-
-    key = jr.PRNGKey(6)
-    T, Z = _make_triplet_data(key)
-    w_samples = jnp.array([[1 / 3, 1 / 3, 1 / 3], [0.8, 0.1, 0.1]])
-    n_aligned = aligned_triplets(w_samples, T, Z, sig=0.1)
-    acc = triplet_accuracy(w_samples, T, Z, sig=0.1)
-    assert n_aligned.shape == (2,)
-    assert jnp.all((n_aligned >= 0) & (n_aligned <= T.shape[0]))
-    assert jnp.allclose(n_aligned, acc * T.shape[0], atol=1e-3)
-
-
-def test_aligned_triplets_preresolved_sig():
-    """Pre-resolved (n, 3) sigmas give the same counts as the scalar."""
-    from bii.diagnostics import aligned_triplets
-
-    key = jr.PRNGKey(7)
-    T, Z = _make_triplet_data(key, p=4)
-    w_samples = jnp.ones((3, 4)) / 4
-    sig_pre = jnp.full((T.shape[0], 3), 0.1)
-    assert jnp.array_equal(aligned_triplets(w_samples, T, Z, sig=0.1),
-                           aligned_triplets(w_samples, T, Z, sig=sig_pre))
+def test_waic_known_answer():
+    Z = jnp.array([[[0.0, 0.0], [1.0, 0.5], [2.0, 0.2]], [[0.0, 1.0], [0.5, 0.0], [0.2, 2.0]]])
+    T = jnp.array([1.0, 0.0])
+    w = jnp.array([[0.5, 0.5], [0.8, 0.2], [0.3, 0.7]])
+    ll = np.stack([np.asarray(loglik_w_per_triplet(wi, T, Z, 0.3)) for wi in w])
+    lppd = np.sum(np.log(np.mean(np.exp(ll), axis=0)))
+    expected = -2 * (lppd - np.sum(np.var(ll, axis=0)))
+    assert np.isclose(compute_waic(w, T, Z, 0.3), expected, rtol=1e-5)

@@ -1,4 +1,4 @@
-"""Likelihood functions for triplet comparisons — all pure functions."""
+"""Triplet likelihood: the moments of the gap (Lemma 1) and the probit (Theorem 1)."""
 
 import jax
 from jax import numpy as jnp
@@ -7,24 +7,19 @@ from jax.scipy.special import log_ndtr
 
 @jax.jit
 def delta_V_one_triplet(zi, zj, zk, w, sig2_i, sig2_j, sig2_k):  # noqa: N802
-    """Compute mean (mu) and variance (V) for the Gaussian probit approximation.
+    """Mean ``mu`` and variance ``V`` of the weighted gap of one triplet (Lemma 1).
 
-    Supports both per-point isotropic noise (sig2_* scalars) and
-    general diagonal noise (sig2_* as (p,) vectors).
-
-    From Theorem 1 (sample.tex): y_l | z_l ~ N(z_l, Σ_l), Σ_l diagonal.
-
-    Convention: i = candidate 1, j = candidate 2, k = anchor.
+    The gap is ``||y_i - y_k||_W^2 - ||y_j - y_k||_W^2`` with ``y_l ~ N(z_l, Sigma_l)``,
+    ``Sigma_l`` diagonal and ``W = diag(w)``. Convention: ``i`` and ``j`` are the two
+    candidates, ``k`` the anchor.
 
     Args:
-        zi, zj, zk: (p,) embeddings of the three triplet points.
-        w: (p,) simplex weights.
-        sig2_i, sig2_j, sig2_k: per-point noise variances.
-            Scalar: per-point isotropic (σ_l² I).
-            (p,): general diagonal (Σ_l = diag(σ²_{l,d})).
+        zi, zj, zk: (p,) source points.
+        w: (p,) weights on the simplex.
+        sig2_i, sig2_j, sig2_k: noise variances, scalars (isotropic) or (p,).
 
     Returns:
-        ``(mu, V)`` — both scalars.
+        ``(mu, V)``, two scalars.
     """
     a = zi - zk
     b = zj - zk
@@ -55,359 +50,107 @@ def delta_V_one_triplet(zi, zj, zk, w, sig2_i, sig2_j, sig2_k):  # noqa: N802
     return mu, V
 
 
-# Slope-matching constant for the logistic link: sigmoid(1.702 s) deviates
-# from Phi(s) by less than 0.01 uniformly in s (Camilli 1994, IRT tradition).
-LOGIT_SCALE = 1.702
+def _delta_V_all(w, Z, sig):  # noqa: N802
+    """Per-triplet ``(mu, V)`` under ``w``, both of shape ``(n,)``.
 
-
-def logP_log1mP_from_deltaV(delta, V, clip_s=None, link="probit", tau2=0.0,  # noqa: N802
-                            lam=1.0):
-    """Log probabilities from delta and V via the chosen link CDF.
-
-    When ``clip_s`` is given, ``s = delta / sqrt(V)`` is truncated to
-    ``[-clip_s, clip_s]`` before the link CDF. The clipped saturating
-    regime contributes a bounded loss and zero gradient in ``w``, which
-    defuses the magnesium-collapse failure mode without changing the
-    sampler. Equivalent to a censored likelihood with the censoring
-    threshold at ``clip_s``.
-
-    ``link`` selects the CDF applied to ``s``:
-        ``"probit"``: normal CDF (the Gaussian approximation of Theorem 1).
-            Tail penalty ``~ -s^2 / 2``.
-        ``"logit"``: slope-matched logistic CDF ``sigmoid(LOGIT_SCALE * s)``.
-            Tail penalty ``~ -LOGIT_SCALE * |s|`` (log-linear), matching the
-            sub-exponential tails of the exact distance-difference statistic;
-            robust to the dominated-coordinate regime where the Gaussian
-            shape approximation fails.
-
-    ``tau2`` is an extra variance added to ``V`` before standardising:
-    ``s = delta / sqrt(V + tau2)``. It models relation noise between the
-    target and the source that the measurement-noise ``V`` omits (the
-    weak-signal case where the model's confidence saturates because V is
-    too small). ``tau2 = 0`` recovers the plain statistic. May be a traced
-    scalar so ``tau`` can be sampled jointly with the weights.
-
-    ``lam`` is the calibration slope: ``s -> lam * s``, applied before the
-    clipping and the link. Since ``lam * delta / sqrt(V) = delta / sqrt(V /
-    lam^2)``, a slope below one inflates the variance of every triplet by
-    ``1 / lam^2`` (labels less predictable than the measurement noise
-    implies) and a slope above one sharpens. Being dimensionless, it keeps
-    the scale invariance that an additive ``tau2`` breaks. ``lam = 1``
-    recovers the plain statistic. May be a traced scalar so the slope can be
-    integrated out on a grid (see :func:`loglik_w_slope_grid`).
+    ``Z`` is ``(n, 3, p)`` with the anchor in column 0. ``sig`` is the noise standard
+    deviation: a scalar, per feature ``(p,)``, or per triplet and point, ``(n, 3)`` or
+    ``(n, 3, p)``, in the column order of ``Z``. Full covariance matrices are not
+    supported.
     """
-    s = lam * delta / jnp.sqrt(V + tau2 + 1e-12)
-    if clip_s is not None:
-        s = jnp.clip(s, -clip_s, clip_s)
-    if link == "probit":
-        logP = log_ndtr(-s)  # noqa: N806
-        log1mP = log_ndtr(s)  # noqa: N806
-    elif link == "logit":
-        logP = jax.nn.log_sigmoid(-LOGIT_SCALE * s)  # noqa: N806
-        log1mP = jax.nn.log_sigmoid(LOGIT_SCALE * s)  # noqa: N806
-    else:
-        raise ValueError(f"Unknown link: {link!r} (expected 'probit' or 'logit')")
-    return logP, log1mP
-
-
-def _sig_to_sig2(sig):
-    """Square the noise std (scalar or (p,)).
-
-    Per-triplet pre-resolved sigmas (ndim >= 2) never reach this helper;
-    they are handled by :func:`_resolve_sig2`. Full (non-diagonal)
-    covariance matrices are not supported.
-    """
-    return jnp.square(jnp.asarray(sig))
-
-
-def _make_sig2_fn(sig, noise_model):
-    """Return a function z_l -> sig2_l for the given noise model."""
-    sig2 = _sig_to_sig2(sig)
-    if noise_model == "additive":
-        def sig2_fn(z_l):
-            return sig2
-        return sig2_fn
-    elif noise_model == "multiplicative":
-        beta = jnp.exp(sig2) * (jnp.exp(sig2) - 1.0)
-        def sig2_fn(z_l):
-            return beta * z_l**2
-        return sig2_fn
-    else:
-        raise ValueError(f"Unknown noise_model: {noise_model!r}")
-
-
-def _resolve_sig2(sig, noise_model, zi, zj, zk):
-    """Resolve per-triplet noise variances.
-
-    Supports:
-        - scalar or (p,): global noise, dispatched via noise_model.
-        - (n_triplets, 3): per-point isotropic, pre-resolved via indices.
-        - (n_triplets, 3, p): per-point diagonal, pre-resolved via indices.
-
-    Returns:
-        ``(sig2_i, sig2_j, sig2_k)`` — each scalar, (n_triplets,), or (n_triplets, p).
-
-    Raises:
-        ValueError: if a 2-D/3-D ``sig`` does not match the per-triplet
-            shapes above — in particular a full (p, p) covariance matrix,
-            which is not supported.
-    """
+    zi, zj, zk = Z[:, 1], Z[:, 2], Z[:, 0]
     sig = jnp.asarray(sig)
     if sig.ndim >= 2:
         n, p = zi.shape[0], zi.shape[1]
-        expected = {(n, 3), (n, 3, p)}
-        if sig.shape not in expected:
+        if sig.shape not in {(n, 3), (n, 3, p)}:
             raise ValueError(
-                f"sig of shape {sig.shape} is not a valid per-triplet sigma "
-                f"array; expected (n_triplets, 3) = ({n}, 3) or "
-                f"(n_triplets, 3, p) = ({n}, 3, {p}). Full (non-diagonal) "
-                f"covariance matrices are not supported."
+                f"sig of shape {sig.shape} is not a per-triplet sigma array; expected "
+                f"(n_triplets, 3) = ({n}, 3) or (n_triplets, 3, p) = ({n}, 3, {p})."
             )
-        # Pre-resolved per-triplet sigmas.
-        # Column order matches Z: 0=anchor(k), 1=dest1(i), 2=dest2(j)
         sig2_i = sig[:, 1] ** 2
         sig2_j = sig[:, 2] ** 2
         sig2_k = sig[:, 0] ** 2
-        return sig2_i, sig2_j, sig2_k
-    else:
-        sig2_fn = _make_sig2_fn(sig, noise_model)
-        return sig2_fn(zi), sig2_fn(zj), sig2_fn(zk)
-
-
-def loglik_w(w, T, Z, sig, noise_model="additive", triplet_weights=None, clip_s=None,
-             pi_inclusion=None, link="probit", tau2=0.0, lam=1.0):
-    """Log-likelihood given weights w directly on the simplex.
-
-    Args:
-        w: (p,) simplex weights.
-        T: (n,) binary triplet labels.
-        Z: (n, 3, p) triplet embeddings.
-        sig: noise std — scalar, (p,), or (n_triplets, 3) pre-resolved.
-        noise_model: ``"additive"`` (shared σ) or ``"multiplicative"`` (β·z²).
-            Ignored when sig is (n_triplets, 3).
-        triplet_weights: optional (n,) per-triplet importance weights. When
-            provided, the loglik becomes ``sum(weights * per_triplet_logP)``
-            instead of the plain sum. Designed for importance-weighted
-            samplers (see :func:`bii.data.make_triplets_rank_weighted`).
-        clip_s: optional float. When set, the per-triplet probit statistic
-            ``s = delta / sqrt(V)`` is clipped to ``[-clip_s, clip_s]``
-            before the normal CDF. Bounds the saturating contribution of
-            any single triplet and zeroes the gradient in ``w`` outside
-            the trust region — a censored-probit robustifier.
-        pi_inclusion: optional float in (0, 1). When set, the per-triplet
-            likelihood becomes a two-component mixture
-            ``P(T_t | w) = pi * Phi(±s_t) + (1 - pi) * 0.5``, equivalent to a
-            latent inclusion variable
-            ``m_t ~ Bernoulli(pi)`` marginalised out: with prob ``pi`` the
-            triplet is "informative" (BII model), with prob ``1 - pi`` it
-            is "noise" (uniform label). The posterior inclusion probability
-            ``P(m_t = 1 | T_t, w) = pi*P_t / (pi*P_t + (1-pi)*0.5)`` adapts to
-            ``w`` automatically as NUTS samples, providing the
-            "probabilistic triplet selection that evolves with w" version
-            of the static [eps, 1-eps] filter without a new MCMC kernel.
-            Default ``None`` recovers the plain probit likelihood.
-        link: ``"probit"`` (normal CDF, default) or ``"logit"``
-            (slope-matched logistic CDF with log-linear tails; see
-            :func:`logP_log1mP_from_deltaV`).
-        tau2: extra (relation-noise) variance added to ``V`` before
-            standardising; see :func:`logP_log1mP_from_deltaV`. Default 0.
-        lam: calibration slope multiplying the standardised gap; see
-            :func:`logP_log1mP_from_deltaV`. Default 1.
-    """
-    zi, zj, zk = Z[:, 1], Z[:, 2], Z[:, 0]
-    sig = jnp.asarray(sig)
-
-    if sig.ndim >= 2:
-        # Pre-resolved per-triplet sigmas — pass sig2 directly, no sig2_fn
-        sig2_i, sig2_j, sig2_k = _resolve_sig2(sig, noise_model, zi, zj, zk)
-
-        def dv(zi, zj, zk, s2i, s2j, s2k):
-            return delta_V_one_triplet(zi, zj, zk, w, s2i, s2j, s2k)
-
-        delta, V = jax.vmap(dv)(zi, zj, zk, sig2_i, sig2_j, sig2_k)
-    else:
-        sig2_fn = _make_sig2_fn(sig, noise_model)
-
-        def dv(zi, zj, zk):
-            return delta_V_one_triplet(zi, zj, zk, w,
-                                       sig2_fn(zi), sig2_fn(zj), sig2_fn(zk))
-
-        delta, V = jax.vmap(dv)(zi, zj, zk)
-
-    logP, log1mP = logP_log1mP_from_deltaV(delta, V, clip_s=clip_s, link=link, tau2=tau2,
-                                           lam=lam)
-    log_pt = T * logP + (1.0 - T) * log1mP
-
-    if pi_inclusion is None:
-        per_triplet = log_pt
-    else:
-        # Mixture: log[pi * P_t + (1 - pi) * 0.5]
-        log_pi = jnp.log(pi_inclusion)
-        log_one_minus_pi = jnp.log1p(-pi_inclusion)
-        per_triplet = jnp.logaddexp(
-            log_pi + log_pt,
-            log_one_minus_pi + jnp.log(0.5),
-        )
-
-    if triplet_weights is None:
-        return jnp.sum(per_triplet)
-    return jnp.sum(triplet_weights * per_triplet)
-
-
-def loglik_w_per_triplet(w, T, Z, sig, noise_model="additive", link="probit", tau2=0.0,
-                         lam=1.0):
-    """Per-triplet log-likelihood given weights w on the simplex."""
-    zi, zj, zk = Z[:, 1], Z[:, 2], Z[:, 0]
-    sig = jnp.asarray(sig)
-
-    if sig.ndim >= 2:
-        sig2_i, sig2_j, sig2_k = _resolve_sig2(sig, noise_model, zi, zj, zk)
-
-        def dv(zi, zj, zk, s2i, s2j, s2k):
-            return delta_V_one_triplet(zi, zj, zk, w, s2i, s2j, s2k)
-
-        delta, V = jax.vmap(dv)(zi, zj, zk, sig2_i, sig2_j, sig2_k)
-    else:
-        sig2_fn = _make_sig2_fn(sig, noise_model)
-
-        def dv(zi, zj, zk):
-            return delta_V_one_triplet(zi, zj, zk, w,
-                                       sig2_fn(zi), sig2_fn(zj), sig2_fn(zk))
-
-        delta, V = jax.vmap(dv)(zi, zj, zk)
-
-    logP, log1mP = logP_log1mP_from_deltaV(delta, V, link=link, tau2=tau2, lam=lam)
-    return T * logP + (1.0 - T) * log1mP
-
-
-def loglik_theta(theta, T, Z, sig, noise_model="additive", link="probit"):
-    """Log-likelihood in unconstrained theta-space via softmax."""
-    return loglik_w(jax.nn.softmax(theta), T, Z, sig, noise_model, link=link)
-
-
-def inclusion_probs(w, T, Z, sig, pi_inclusion, noise_model="additive", clip_s=None,
-                    link="probit", lam=1.0):
-    """Posterior P(m_t = 1 | T_t, w) under the inclusion-mixture model.
-
-    The Rao-Blackwellised version of explicit Gibbs sampling of inclusion
-    variables: returns, for each triplet, the probability that it is the
-    "informative" component of the mixture rather than the noise component,
-    given the current weights ``w`` and label ``T_t``.
-
-    For triplets the model predicts well (high ``P_t``), the inclusion
-    probability is close to 1; for triplets it predicts poorly (saturating
-    wrong), it drops toward ``pi / (pi + (1-pi))`` — a soft inclusion that
-    *evolves with w* as the chain samples.
-
-    Args:
-        w: (p,) simplex weights (or a single draw).
-        T, Z, sig, noise_model, clip_s, link, lam: as in :func:`loglik_w`.
-        pi_inclusion: float in (0, 1), the prior inclusion rate.
-
-    Returns:
-        (n,) array of posterior inclusion probabilities.
-    """
-    zi, zj, zk = Z[:, 1], Z[:, 2], Z[:, 0]
-    sig = jnp.asarray(sig)
-    if sig.ndim >= 2:
-        sig2_i, sig2_j, sig2_k = _resolve_sig2(sig, noise_model, zi, zj, zk)
-        def dv(zi, zj, zk, s2i, s2j, s2k):
-            return delta_V_one_triplet(zi, zj, zk, w, s2i, s2j, s2k)
-        delta, V = jax.vmap(dv)(zi, zj, zk, sig2_i, sig2_j, sig2_k)
-    else:
-        sig2_fn = _make_sig2_fn(sig, noise_model)
-        def dv(zi, zj, zk):
-            return delta_V_one_triplet(zi, zj, zk, w,
-                                       sig2_fn(zi), sig2_fn(zj), sig2_fn(zk))
-        delta, V = jax.vmap(dv)(zi, zj, zk)
-    logP, log1mP = logP_log1mP_from_deltaV(delta, V, clip_s=clip_s, link=link, lam=lam)
-    log_pt = T * logP + (1.0 - T) * log1mP
-    log_pi = jnp.log(pi_inclusion)
-    log_one_minus_pi = jnp.log1p(-pi_inclusion)
-    log_num = log_pi + log_pt
-    log_denom = jnp.logaddexp(log_num, log_one_minus_pi + jnp.log(0.5))
-    return jnp.exp(log_num - log_denom)
-
-
-def _delta_V_all(w, Z, sig, noise_model="additive"):  # noqa: N802
-    """Per-triplet ``(delta, V)`` under weights ``w``, for every supported ``sig``."""
-    zi, zj, zk = Z[:, 1], Z[:, 2], Z[:, 0]
-    sig = jnp.asarray(sig)
-    if sig.ndim >= 2:
-        sig2_i, sig2_j, sig2_k = _resolve_sig2(sig, noise_model, zi, zj, zk)
 
         def dv(zi, zj, zk, s2i, s2j, s2k):
             return delta_V_one_triplet(zi, zj, zk, w, s2i, s2j, s2k)
 
         return jax.vmap(dv)(zi, zj, zk, sig2_i, sig2_j, sig2_k)
 
-    sig2_fn = _make_sig2_fn(sig, noise_model)
+    sig2 = jnp.square(jnp.asarray(sig))
 
     def dv(zi, zj, zk):
-        return delta_V_one_triplet(zi, zj, zk, w,
-                                   sig2_fn(zi), sig2_fn(zj), sig2_fn(zk))
+        return delta_V_one_triplet(zi, zj, zk, w, sig2, sig2, sig2)
 
     return jax.vmap(dv)(zi, zj, zk)
 
 
-def slope_scale(w, Z, sig, noise_model="additive", triplet_weights=None):
-    """Root-mean-square standardised gap ``rms_t s_t(w)``; uses no labels.
+def _log_probs(delta, V, lam=1.0):
+    """``log P(T = 1)`` and ``log P(T = 0)`` under the probit, at slope ``lam``.
 
-    Converts a calibrated slope into the slope on ``s``:
-    ``lam = slope / slope_scale(w)``. With ``triplet_weights`` the mean is
-    weighted.
+    ``s = lam * mu / sqrt(V)`` and ``P(T = 1) = Phi(-s)``: label 1 means that the
+    first candidate is the closer one.
     """
-    delta, V = _delta_V_all(w, Z, sig, noise_model)
-    s2 = delta**2 / (V + 1e-12)
-    if triplet_weights is None:
-        return jnp.sqrt(jnp.mean(s2) + 1e-12)
-    return jnp.sqrt(jnp.sum(triplet_weights * s2) / jnp.sum(triplet_weights) + 1e-12)
+    s = lam * delta / jnp.sqrt(V + 1e-12)
+    return log_ndtr(-s), log_ndtr(s)
 
 
-def loglik_w_slope_grid(w, T, Z, sig, slope_grid, noise_model="additive",
-                        triplet_weights=None, clip_s=None, pi_inclusion=None,
-                        link="probit"):
-    """Log-likelihood at each calibrated slope of a grid, shape ``(R,)``.
+def loglik_w_per_triplet(w, T, Z, sig, lam=1.0):
+    """Log-likelihood of each triplet, shape ``(n,)``; see :func:`loglik_w`."""
+    delta, V = _delta_V_all(w, Z, sig)
+    logP, log1mP = _log_probs(delta, V, lam)  # noqa: N806
+    return T * logP + (1.0 - T) * log1mP
 
-    The grid holds the *calibrated* slope ``lam * slope_scale(w)``, the
-    root-mean-square standardised gap after calibration: entry ``r`` is
-    :func:`loglik_w` at ``lam = slope_grid[r] / slope_scale(w)``.
 
-    Why calibrated rather than ``lam`` itself: the direction of ``w`` sets
-    the overall confidence ``slope_scale(w)``, and under weak signal the
-    likelihood lowers it by collapsing onto the coordinate with the lowest
-    spread-to-noise ratio. On the calibrated scale the second-order
-    confidence penalty, ``2 phi(0)^2 slope^2 n``, is the same for every
-    ``w``, so that lever is gone; a prior on ``lam`` itself would instead
-    leave an Occam tilt toward the collapsed vertex.
+def loglik_w(w, T, Z, sig, lam=1.0):
+    """Log-likelihood of the triplet labels given weights ``w`` on the simplex.
 
     Args:
-        w: (p,) simplex weights.
-        T, Z, sig, noise_model, triplet_weights, clip_s, pi_inclusion, link:
-            as in :func:`loglik_w`.
+        w: (p,) weights.
+        T: (n,) labels, 1 when the first candidate is closer to the anchor.
+        Z: (n, 3, p) source triplets, anchor in column 0.
+        sig: noise standard deviation; see :func:`_delta_V_all`.
+        lam: calibration slope, ``s -> lam * s``; 1 is the plain probit.
+    """
+    delta, V = _delta_V_all(w, Z, sig)
+    logP, log1mP = _log_probs(delta, V, lam)  # noqa: N806
+    return jnp.sum(T * logP + (1.0 - T) * log1mP)
+
+
+def slope_scale(w, Z, sig):
+    """Confidence ``s_bar(w)``: the root-mean-square standardised gap; uses no labels.
+
+    Converts a calibrated slope into a slope on ``s``: ``lam = slope / slope_scale(w)``.
+    """
+    delta, V = _delta_V_all(w, Z, sig)
+    s2 = delta**2 / (V + 1e-12)
+    return jnp.sqrt(jnp.mean(s2) + 1e-12)
+
+
+def loglik_w_slope_grid(w, T, Z, sig, slope_grid):
+    """Log-likelihood at each calibrated slope of a grid, shape ``(R,)``.
+
+    Entry ``r`` is :func:`loglik_w` at ``lam = slope_grid[r] / slope_scale(w)``. On the
+    calibrated scale every ``w`` faces the same grid of confidences, so a less
+    confident metric gains no prior mass (the collapse of the paper's Section 5).
+
+    Args:
+        w, T, Z, sig: as in :func:`loglik_w`.
         slope_grid: (R,) positive calibrated slopes, e.g.
             :func:`bii.priors.make_slope_grid`.
     """
-    scale = slope_scale(w, Z, sig, noise_model, triplet_weights=triplet_weights)
+    scale = slope_scale(w, Z, sig)
 
     def one(slope):
-        return loglik_w(w, T, Z, sig, noise_model, triplet_weights=triplet_weights,
-                        clip_s=clip_s, pi_inclusion=pi_inclusion, link=link,
-                        lam=slope / scale)
+        return loglik_w(w, T, Z, sig, lam=slope / scale)
 
     return jax.vmap(one)(jnp.asarray(slope_grid))
 
 
-def slope_posterior(w, T, Z, sig, slope_grid, kappa=1.0, noise_model="additive",
-                    triplet_weights=None, clip_s=None, pi_inclusion=None,
-                    link="probit"):
+def slope_posterior(w, T, Z, sig, slope_grid, kappa=1.0):
     """Posterior over the calibrated-slope grid given ``w``, shape ``(R,)``.
 
-    Uniform prior weights on the grid (log-uniform for a log-spaced grid) and
-    the ``kappa``-tempered likelihood, as in
-    :func:`bii.priors.make_dirichlet_logposterior` with ``slope_grid``.
+    Equal prior weights on the grid and the ``kappa``-tempered likelihood, as in
+    :func:`bii.priors.make_dirichlet_logposterior`.
     """
-    ll = loglik_w_slope_grid(w, T, Z, sig, slope_grid, noise_model,
-                             triplet_weights=triplet_weights, clip_s=clip_s,
-                             pi_inclusion=pi_inclusion, link=link)
+    ll = loglik_w_slope_grid(w, T, Z, sig, slope_grid)
     return jax.nn.softmax(kappa * ll)

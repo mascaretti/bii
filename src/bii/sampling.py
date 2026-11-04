@@ -1,4 +1,4 @@
-"""MCMC and variational inference runners — prior-agnostic, pure functions."""
+"""NUTS and MAP runners: prior-agnostic, pure functions."""
 
 import blackjax
 import jax
@@ -104,62 +104,6 @@ def run_nuts(
     return raw_samples, acceptance_rates
 
 
-# ---------------------------------------------------------------------------
-# Variational inference
-# ---------------------------------------------------------------------------
-
-
-def _neg_elbo(params, key, logprob_fn, num_samples):
-    """Negative ELBO for mean-field Gaussian via reparameterization."""
-    mu = params["mu"]
-    log_sigma = params["log_sigma"]
-    sigma = jnp.exp(log_sigma)
-    p = mu.shape[0]
-
-    eps = random.normal(key, shape=(num_samples, p))
-    theta = mu[None, :] + sigma[None, :] * eps
-
-    expected_logprob = jnp.mean(jax.vmap(logprob_fn)(theta))
-    entropy = jnp.sum(log_sigma) + 0.5 * p * jnp.log(2.0 * jnp.pi * jnp.e)
-    return -(expected_logprob + entropy)
-
-
-def run_vi(key, logprob_fn, dim, num_steps=5000, lr=1e-2, num_elbo_samples=8):
-    """Fit a mean-field Gaussian approximation via ELBO maximization.
-
-    Args:
-        key: JAX random key.
-        logprob_fn: callable ``theta -> scalar`` log-posterior.
-        dim: dimension of theta.
-        num_steps: optimization steps.
-        lr: Adam learning rate.
-        num_elbo_samples: MC samples per ELBO estimate.
-
-    Returns:
-        ``(mu, log_sigma, elbo_history)``
-            mu: (dim,) variational mean.
-            log_sigma: (dim,) log variational std.
-            elbo_history: (num_steps,) ELBO values.
-    """
-    params = {"mu": jnp.zeros(dim), "log_sigma": -jnp.ones(dim)}
-    optimizer = optax.adam(lr)
-    opt_state = optimizer.init(params)
-
-    def step(carry, step_key):
-        params, opt_state = carry
-        loss, grads = jax.value_and_grad(_neg_elbo)(
-            params, step_key, logprob_fn, num_elbo_samples
-        )
-        updates, opt_state = optimizer.update(grads, opt_state, params)
-        params = optax.apply_updates(params, updates)
-        return (params, opt_state), loss
-
-    keys = random.split(key, num_steps)
-    (params, _), neg_elbo_history = jax.lax.scan(step, (params, opt_state), keys)
-
-    return params["mu"], params["log_sigma"], -neg_elbo_history
-
-
 def run_map(key, logprob_fn, dim, num_steps=3000, lr=1e-2, n_restarts=1,
             init_scale=0.5):
     """Find the MAP (posterior mode) by gradient ascent on the log-posterior.
@@ -168,7 +112,7 @@ def run_map(key, logprob_fn, dim, num_steps=3000, lr=1e-2, n_restarts=1,
     large ``dim`` where NUTS is expensive. Adam ascends ``logprob_fn`` in the
     unconstrained space, with optional random restarts (the highest-logprob mode
     wins). This is the mode of the softmax-reparameterised posterior — the
-    Dirichlet Jacobian is included — so it is consistent with the NUTS/VI
+    Dirichlet Jacobian is included — so it is consistent with the NUTS
     parameterisation, and it does *not* quantify uncertainty (use NUTS for that).
 
     Args:
@@ -205,25 +149,3 @@ def run_map(key, logprob_fn, dim, num_steps=3000, lr=1e-2, n_restarts=1,
     positions, histories = jax.vmap(optimise)(inits)
     best = jnp.argmax(histories[:, -1])
     return positions[best], histories[best]
-
-
-def sample_vi(key, mu, log_sigma, num_samples):
-    """Draw samples from a fitted mean-field Gaussian posterior.
-
-    Args:
-        key: JAX random key.
-        mu: (dim,) variational mean.
-        log_sigma: (dim,) log variational std.
-        num_samples: number of samples.
-
-    Returns:
-        ``(theta_samples, w_samples)``
-            theta_samples: (num_samples, dim).
-            w_samples: (num_samples, dim) on the simplex via softmax.
-    """
-    p = mu.shape[0]
-    sigma = jnp.exp(log_sigma)
-    eps = random.normal(key, shape=(num_samples, p))
-    theta_samples = mu[None, :] + sigma[None, :] * eps
-    w_samples = jax.vmap(jax.nn.softmax)(theta_samples)
-    return theta_samples, w_samples

@@ -1,53 +1,34 @@
-"""Bayesian Information Imbalance — metric weight inference from triplets."""
+"""Bayesian information imbalance: metric weights from triplet comparisons."""
 
-from bii.data import (
-    T_from_X,
-    kappa_from_triplets,
-    make_triplets,
-    make_triplets_random_sparse,
-    make_triplets_rank_weighted,
-    make_triplets_yfar,
-    make_triplets_z_informative,
-    make_triplets_z_softmax,
-    make_triplets_zfar,
-    target_yfar_bump,
-)
-from bii.diagnostics import (
-    aligned_triplets,
-    alignment_index,
-    compute_ess,
-    compute_rhat,
-    compute_waic,
-    triplet_accuracy,
-    weight_entropy,
-)
+from bii.data import T_from_X, kappa_from_triplets, make_triplets
+from bii.diagnostics import aligned_triplets, compute_ess, compute_rhat, compute_waic
 from bii.fit import fit_bii
+from bii.inference import (
+    delta_V_one_triplet,
+    loglik_w,
+    loglik_w_slope_grid,
+    slope_posterior,
+    slope_scale,
+)
 from bii.priors import make_dirichlet_logposterior, make_slope_grid
-from bii.sampling import run_map, run_nuts, run_vi, sample_vi
+from bii.sampling import run_map, run_nuts
 
 __all__ = [
     "fit_bii",
     "T_from_X",
     "kappa_from_triplets",
     "make_triplets",
-    "make_triplets_random_sparse",
-    "make_triplets_rank_weighted",
-    "make_triplets_yfar",
-    "make_triplets_z_informative",
-    "make_triplets_z_softmax",
-    "make_triplets_zfar",
-    "target_yfar_bump",
+    "delta_V_one_triplet",
+    "loglik_w",
+    "loglik_w_slope_grid",
+    "slope_scale",
+    "slope_posterior",
     "make_dirichlet_logposterior",
     "make_slope_grid",
     "run_nuts",
-    "run_vi",
     "run_map",
-    "sample_vi",
-    "compute_waic",
     "compute_rhat",
     "compute_ess",
-    "weight_entropy",
-    "triplet_accuracy",
+    "compute_waic",
     "aligned_triplets",
-    "alignment_index",
 ]

@@ -1,140 +1,28 @@
-"""Tests for MCMC and VI runners."""
+import numpy as np
+from jax import numpy as jnp
+from jax import random
 
-import jax.numpy as jnp
-import jax.random as jr
+from bii import run_map, run_nuts
 
-from bii.data import make_triplets
-from bii.fit import fit_bii
-from bii.priors import make_dirichlet_logposterior
-from bii.sampling import run_nuts, run_vi, sample_vi
-
-
-def _make_pool(key, n=100, p=3, sig=0.1, w_star=None):
-    k1, k2 = jr.split(key)
-    x_pool = jr.normal(k1, (n, p))
-    if w_star is not None:
-        x_pool = x_pool * jnp.sqrt(w_star)[None, :]
-    eps = jr.normal(k2, (n, p)) * sig
-    z_pool = x_pool + eps
-    return x_pool, z_pool
+MEAN = jnp.array([1.0, -2.0])
+SD = jnp.array([0.5, 2.0])
 
 
-def _make_logprob(key, p=3):
-    X, Z = _make_pool(key, n=100, p=p)
-    T, _, Z_trip, _ = make_triplets(key, X, Z, n_triplets=50)
-    return make_dirichlet_logposterior(T, Z_trip, sig=0.1, alpha=jnp.ones(p))
+def gaussian(x):
+    return -0.5 * jnp.sum(((x - MEAN) / SD) ** 2)
 
 
-def test_run_nuts_smoke():
-    key = jr.PRNGKey(0)
-    logprob_fn = _make_logprob(key, p=3)
-    raw, acc = run_nuts(
-        key, logprob_fn, jnp.zeros(3),
-        num_samples=30, num_warmup=30, num_chains=1,
-    )
-    assert raw.shape == (30, 1, 3)
-    assert acc.shape == (30, 1)
+def test_nuts_recovers_a_gaussian():
+    draws, acc = run_nuts(random.PRNGKey(0), gaussian, jnp.zeros(2),
+                          num_samples=500, num_warmup=300, num_chains=2)
+    x = np.asarray(draws).reshape(-1, 2)
+    assert draws.shape == (500, 2, 2) and acc.shape == (500, 2)
+    assert np.all(np.abs(x.mean(axis=0) - MEAN) < 0.25 * SD)
+    assert np.all(np.abs(x.std(axis=0) / SD - 1) < 0.15)
 
 
-def test_run_nuts_warms_up_for_num_warmup_steps(monkeypatch):
-    """Regression: num_warmup reaches BlackJAX, which used to warm up 1000 steps."""
-    import blackjax
-
-    seen = []
-    real = blackjax.window_adaptation
-
-    def spy(*args, **kwargs):
-        adaptation = real(*args, **kwargs)
-
-        def run(key, position, num_steps=1000):
-            seen.append(num_steps)
-            return adaptation.run(key, position, num_steps=num_steps)
-
-        return adaptation._replace(run=run)
-
-    monkeypatch.setattr(blackjax, "window_adaptation", spy)
-    key = jr.PRNGKey(3)
-    run_nuts(key, _make_logprob(key, p=3), jnp.zeros(3),
-             num_samples=5, num_warmup=7, num_chains=2)
-    assert seen == [7]
-
-
-def test_run_nuts_progress_prints_once_per_step(capsys):
-    """Progress lines come once per reported step, not once per chain."""
-    import jax
-
-    key = jr.PRNGKey(4)
-    raw, _ = run_nuts(key, _make_logprob(key, p=3), jnp.zeros(3),
-                      num_samples=20, num_warmup=10, num_chains=2, progress_bar=True)
-    jax.block_until_ready(raw)
-    jax.effects_barrier()
-    out = capsys.readouterr().out
-    assert "NUTS: 2 chains, 10 warmup steps, then 20 draws" in out
-    assert out.count("sampling 2/20") == 1
-    assert out.count("sampling 20/20") == 1
-
-
-def test_run_vi_smoke():
-    key = jr.PRNGKey(1)
-    logprob_fn = _make_logprob(key, p=3)
-    mu, log_sigma, elbo = run_vi(key, logprob_fn, dim=3, num_steps=200)
-    assert mu.shape == (3,)
-    assert log_sigma.shape == (3,)
-    assert elbo.shape == (200,)
-
-
-def test_sample_vi_shapes():
-    key = jr.PRNGKey(2)
-    mu = jnp.zeros(4)
-    log_sigma = -jnp.ones(4)
-    theta, w = sample_vi(key, mu, log_sigma, num_samples=50)
-    assert theta.shape == (50, 4)
-    assert w.shape == (50, 4)
-    assert jnp.allclose(jnp.sum(w, axis=-1), 1.0, atol=1e-5)
-
-
-def test_vi_elbo_increases():
-    key = jr.PRNGKey(99)
-    logprob_fn = _make_logprob(key, p=3)
-    _, _, elbo = run_vi(key, logprob_fn, dim=3, num_steps=1000)
-    assert elbo[-1] > elbo[0]
-
-
-def test_vi_smoke_via_fit_bii():
-    key = jr.PRNGKey(0)
-    x_pool, z_pool = _make_pool(key, n=100, p=3)
-    result = fit_bii(
-        key, x_pool, z_pool, sig=0.1,
-        inference_method="vi", n_triplets=50,
-        vi_steps=500, vi_num_samples=100,
-    )
-    w = result["w_samples"]
-    assert w.ndim == 3
-    assert w.shape[1] == 1
-    assert jnp.allclose(jnp.sum(w, axis=-1), 1.0, atol=1e-5)
-    assert jnp.isfinite(result["waic"])
-
-
-def test_vi_posterior_not_uniform():
-    """VI posterior should down-weight a pure-noise Z dimension.
-
-    Note: scaling X by sqrt(w_star) does NOT make w identifiable — labels
-    come from unweighted X-distance and Z ≈ X, so uniform w is optimal
-    there. Identifiability requires a Z dimension that carries no signal
-    about X-distances; the posterior should push its weight toward 0.
-    """
-    key = jr.PRNGKey(42)
-    k1, k2, k3 = jr.split(key, 3)
-    x_pool = jr.normal(k1, (200, 2))
-    noise_dim = jr.normal(k2, (200, 1))
-    z_pool = jnp.concatenate(
-        [x_pool + 0.05 * jr.normal(k3, (200, 2)), noise_dim], axis=1
-    )
-    result = fit_bii(
-        key, x_pool, z_pool, sig=0.05,
-        inference_method="vi", n_triplets=50, anchor_fraction=0.3,
-        vi_steps=3000, vi_num_samples=500,
-    )
-    w_mean = result["w_samples"][:, 0, :].mean(0)
-    assert w_mean[2] < 0.1  # noise dim suppressed
-    assert w_mean[0] > 0.25 and w_mean[1] > 0.25  # signal dims retained
+def test_map_finds_the_mode():
+    mode, history = run_map(random.PRNGKey(0), gaussian, 2, num_steps=600, lr=0.05,
+                            n_restarts=3)
+    assert np.allclose(mode, MEAN, atol=1e-3)
+    assert history.shape == (600,) and history[-1] >= history[0]

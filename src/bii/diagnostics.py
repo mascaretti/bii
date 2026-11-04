@@ -1,4 +1,4 @@
-"""Posterior diagnostics: WAIC, R-hat, ESS, alignment — all pure functions."""
+"""Posterior diagnostics: R-hat, ESS, WAIC and aligned triplets — pure functions."""
 
 import jax
 import numpy as np
@@ -6,15 +6,13 @@ from jax import numpy as jnp
 from scipy.special import ndtri
 from scipy.stats import rankdata
 
-from bii.inference import _delta_V_all, delta_V_one_triplet, loglik_w_per_triplet
+from bii.inference import _delta_V_all, loglik_w_per_triplet
 
 
-def compute_waic(w_samples_flat, T, Z, sig, noise_model="additive", link="probit",
-                 tau2=0.0, lam=1.0):
-    """Compute WAIC using lax.map to prevent OOM."""
+def compute_waic(w_samples_flat, T, Z, sig, lam=1.0):
+    """WAIC from draws ``(S, p)``, at calibration slope ``lam``; ``lax.map`` keeps memory low."""
     per_triplet_ll = jax.lax.map(
-        lambda w: loglik_w_per_triplet(w, T, Z, sig, noise_model, link=link, tau2=tau2,
-                                       lam=lam),
+        lambda w: loglik_w_per_triplet(w, T, Z, sig, lam=lam),
         w_samples_flat
     )
 
@@ -23,6 +21,7 @@ def compute_waic(w_samples_flat, T, Z, sig, noise_model="additive", link="probit
     p_waic = jnp.sum(jnp.var(per_triplet_ll, axis=0))
 
     return -2.0 * (lppd - p_waic)
+
 
 def _split_chains(x):
     """Split each chain in half: (n, m) -> (n // 2, 2m)."""
@@ -121,115 +120,24 @@ def compute_ess(samples):
     return out
 
 
-def weight_entropy(w_samples):
-    """Normalized entropy of weight vectors on the simplex.
-
-    Measures concentration of the weight vector:
-    - 0 = uniform (no alignment / all nutrients equally important)
-    - 1 = point mass on one nutrient (perfect alignment)
-
-    Args:
-        w_samples: (S, p) posterior draws on the simplex.
-
-    Returns:
-        (S,) normalized alignment scores in [0, 1].
-    """
-    p = w_samples.shape[1]
-    # Clip to avoid log(0)
-    w_safe = jnp.clip(w_samples, 1e-30, None)
-    H = -jnp.sum(w_safe * jnp.log(w_safe), axis=1)
-    return 1.0 - H / jnp.log(p)
-
-
-def triplet_accuracy(w_samples, T, Z, sig, noise_model="additive"):
-    """Triplet prediction accuracy for each posterior sample.
-
-    Args:
-        w_samples: (S, p) posterior draws on the simplex.
-        T: (n,) binary triplet labels.
-        Z: (n, 3, p) triplet embeddings.
-        sig: noise std — scalar or (p,).
-        noise_model: ``"additive"`` or ``"multiplicative"``.
-
-    Returns:
-        (S,) accuracy values in [0, 1].
-    """
-    from bii.inference import _make_sig2_fn, _resolve_sig2
-    zi, zj, zk = Z[:, 1], Z[:, 2], Z[:, 0]
-    sig = jnp.asarray(sig)
-
-    if sig.ndim >= 2:
-        # Pre-resolved per-triplet sigmas — (n, 3) or (n, 3, p)
-        sig2_i, sig2_j, sig2_k = _resolve_sig2(sig, noise_model, zi, zj, zk)
-
-        def delta_fn(w):
-            def dv(zi, zj, zk, s2i, s2j, s2k):
-                return delta_V_one_triplet(zi, zj, zk, w, s2i, s2j, s2k)
-            delta, _V = jax.vmap(dv)(zi, zj, zk, sig2_i, sig2_j, sig2_k)
-            return delta
-    else:
-        sig2_fn = _make_sig2_fn(sig, noise_model)
-
-        def delta_fn(w):
-            def dv(zi, zj, zk):
-                return delta_V_one_triplet(zi, zj, zk, w,
-                                           sig2_fn(zi), sig2_fn(zj), sig2_fn(zk))
-            delta, _V = jax.vmap(dv)(zi, zj, zk)
-            return delta
-
-    def accuracy_one(w):
-        pred = (delta_fn(w) <= 0.0).astype(jnp.float32)
-        return jnp.mean(pred == T)
-
-    return jax.lax.map(accuracy_one, w_samples)
-
-
-def aligned_triplets(w_samples, T, Z, sig, noise_model="additive"):
+def aligned_triplets(w_samples, T, Z, sig):
     """Number of aligned triplets for each posterior sample.
 
     A triplet is aligned under ``w`` when the source ordering agrees with
     the target label: the predicted label ``1{delta(w) <= 0}`` equals ``T``,
-    i.e. its signed gap is positive. The count is
-    ``triplet_accuracy * n_triplets``, kept as an integer for reporting.
+    i.e. its signed gap is positive.
 
     Args:
         w_samples: (S, p) posterior draws on the simplex.
         T: (n,) binary triplet labels.
         Z: (n, 3, p) triplet embeddings.
-        sig: noise std — scalar, (p,), or pre-resolved per-triplet.
-        noise_model: ``"additive"`` or ``"multiplicative"``.
+        sig: noise std — scalar, (p,), or per triplet, (n, 3) or (n, 3, p).
 
     Returns:
         (S,) integer counts in ``[0, n]``.
     """
     def count_one(w):
-        delta, _V = _delta_V_all(w, Z, sig, noise_model)
+        delta, _V = _delta_V_all(w, Z, sig)
         return jnp.sum((delta <= 0.0).astype(jnp.float32) == T)
 
     return jax.lax.map(count_one, w_samples)
-
-
-def alignment_index(w_samples, T, Z, sig, noise_model="additive", link="probit",
-                    tau2=0.0, lam=1.0):
-    """Normalised cross-entropy alignment index.
-
-    Maps the mean per-triplet log-likelihood to [0, 1]:
-      Δ(w) = 1 + ℓ̄(w) / log(2)
-
-    Args:
-        w_samples: (S, p) posterior draws on the simplex.
-        T: (n,) binary triplet labels.
-        Z: (n, 3, p) triplet embeddings.
-        sig: noise std — scalar or (p,).
-        noise_model: ``"additive"`` or ``"multiplicative"``.
-
-    Returns:
-        (S,) alignment index values in [0, 1].
-    """
-    def delta_one(w):
-        ll = loglik_w_per_triplet(w, T, Z, sig, noise_model, link=link, tau2=tau2,
-                                  lam=lam)
-        mean_ll = jnp.mean(ll)
-        return 1.0 + mean_ll / jnp.log(2.0)
-
-    return jax.lax.map(delta_one, w_samples)
