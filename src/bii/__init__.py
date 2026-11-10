@@ -1,6 +1,6 @@
 """Bayesian information imbalance: metric weights from triplet comparisons."""
 
-from bii.data import T_from_X, kappa_from_triplets, make_triplets
+from bii.data import T_from_X, kappa_from_triplets, make_triplets, make_triplets_local
 from bii.diagnostics import aligned_triplets, compute_ess, compute_rhat, compute_waic
 from bii.fit import fit_bii
 from bii.inference import (
@@ -18,6 +18,7 @@ __all__ = [
     "T_from_X",
     "kappa_from_triplets",
     "make_triplets",
+    "make_triplets_local",
     "delta_V_one_triplet",
     "loglik_w",
     "loglik_w_slope_grid",
