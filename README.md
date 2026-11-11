@@ -10,7 +10,7 @@ the posterior mode.
 ## Install
 
 ```bash
-pip install "git+https://github.com/mascaretti/bii.git@release"
+pip install "git+https://github.com/mascaretti/bii.git@devel"
 ```
 
 ## Use

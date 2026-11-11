@@ -65,7 +65,7 @@ def reference_stack():
 @pytest.mark.skipif(not reference_stack(),
                     reason="exact numbers hold on jax 0.8.2, blackjax 1.7.1, optax 0.2.8, CPU")
 def test_reproduces_the_reference_numbers(signal, map_fit):
-    # The same fits with the bii commit that the experiments pin (aa921d9): the release
+    # The same fits with the bii commit that the experiments pin (aa921d9): this code
     # must give the same numbers, bit for bit, on the same stack.
     assert np.asarray(signal["w_samples"]).mean(axis=(0, 1)).tolist() == [
         0.8064355254173279, 0.11976534128189087, 0.07379871606826782]
